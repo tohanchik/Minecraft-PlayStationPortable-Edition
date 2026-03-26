@@ -3,6 +3,7 @@
 #include "AABB.h"
 #include <math.h>
 #include <vector>
+#include <stdint.h>
 
 class Random;
 
@@ -31,6 +32,7 @@ public:
   uint8_t getBlockLight(int wx, int wy, int wz) const;
   void setSkyLight(int wx, int wy, int wz, uint8_t val);
   void setBlockLight(int wx, int wy, int wz, uint8_t val);
+  uint8_t getWaterLevel(int wx, int wy, int wz) const;
 
   std::vector<AABB> getCubes(const AABB& box) const;
 
@@ -67,10 +69,33 @@ public:
   void tick() {
     // Advance time
     m_time += 1;
+    // Water simulation (voxelworld-style update loop, active cells only)
+    if ((m_time & 1LL) == 0) {
+      simulateWaterStep();
+    }
   }
 
 private:
+  struct WaterUpdate {
+    int x, y, z;
+    uint8_t id;
+    uint8_t level;
+  };
+
+  int worldIndex(int wx, int wy, int wz) const;
+  bool inWorld(int wx, int wy, int wz) const;
+  bool isWaterBlock(uint8_t id) const;
+  bool canWaterReplace(uint8_t id) const;
+  void setWaterLevel(int wx, int wy, int wz, uint8_t level);
+  void activateWaterCell(int wx, int wy, int wz);
+  void initializeWaterState();
+  void queueWaterUpdate(std::vector<WaterUpdate> &updates, int wx, int wy, int wz, uint8_t id, uint8_t level);
+  void simulateWaterStep();
+
   Chunk *m_chunks[WORLD_CHUNKS_X][WORLD_CHUNKS_Z];
+  std::vector<uint8_t> m_waterLevels;
+  std::vector<uint8_t> m_waterActiveMask;
+  std::vector<int> m_activeWaterCells;
   long long m_time = 6000LL;
   float m_lastSunBrightness = 1.0f;
 };
