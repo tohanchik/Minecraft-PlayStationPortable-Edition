@@ -66,10 +66,7 @@ public:
 
   long long getTime() const { return m_time; }
 
-  void tick() {
-    // Advance time
-    m_time += 1;
-  }
+  void tick();
 
 private:
   struct WaterUpdate {

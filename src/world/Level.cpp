@@ -67,6 +67,28 @@ void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
   if (oldId == id) return;
   
   m_chunks[cx][cz]->setBlock(wx & 0xF, wy, wz & 0xF, id);
+
+  // Keep water simulation state in sync with direct block edits.
+  if (isWaterBlock(oldId) && !isWaterBlock(id)) {
+    setWaterLevel(wx, wy, wz, 0);
+  } else if (id == BLOCK_WATER_STILL) {
+    setWaterLevel(wx, wy, wz, 7);
+    activateWaterCell(wx, wy, wz);
+  } else if (id == BLOCK_WATER_FLOW) {
+    uint8_t level = getWaterLevel(wx, wy, wz);
+    if (level == 0) level = 6;
+    setWaterLevel(wx, wy, wz, level);
+    activateWaterCell(wx, wy, wz);
+  }
+
+  // Water reacts to neighbor edits.
+  activateWaterCell(wx + 1, wy, wz);
+  activateWaterCell(wx - 1, wy, wz);
+  activateWaterCell(wx, wy + 1, wz);
+  activateWaterCell(wx, wy - 1, wz);
+  activateWaterCell(wx, wy, wz + 1);
+  activateWaterCell(wx, wy, wz - 1);
+
   updateLight(wx, wy, wz);
 }
 
@@ -374,6 +396,29 @@ void Level::generate(Random *rng) {
   }
 
   computeLighting();
+  initializeWaterState();
+
+  // Prime active cells so static world water starts simulating immediately.
+  int worldX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int worldZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+    for (int z = 0; z < worldZ; z++) {
+      for (int x = 0; x < worldX; x++) {
+        if (isWaterBlock(getBlock(x, y, z))) {
+          activateWaterCell(x, y, z);
+        }
+      }
+    }
+  }
+}
+
+void Level::tick() {
+  m_time += 1;
+
+  // Spread water at a lower frequency than world ticks for PSP perf.
+  if ((m_time & 1LL) == 0) {
+    simulateWaterStep();
+  }
 }
 
 void Level::computeLighting() {
