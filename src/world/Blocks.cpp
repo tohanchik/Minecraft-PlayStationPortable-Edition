@@ -123,6 +123,7 @@ void Blocks_Init() {
   DEF_UV(BLOCK_LOG, 5, 1, 4, 1, 5, 1); // top=log_top,side=log_side
   DEF_UV(BLOCK_LEAVES, 4, 3, 4, 3, 4, 3);
   DEF_UV(BLOCK_GLASS, 1, 3, 1, 3, 1, 3);
+  DEF_UV(BLOCK_BOOKSHELF, 4, 0, 3, 2, 4, 0);
   DEF_UV(BLOCK_SANDSTONE, 0, 12, 0, 11, 0, 13);
   DEF_UV(BLOCK_WOOL, 0, 4, 0, 4, 0, 4);
   DEF_UV(BLOCK_GOLD_BLOCK, 7, 1, 7, 1, 7, 1);
@@ -144,13 +145,14 @@ void Blocks_Init() {
   DEF_UV(BLOCK_MOSSY_COBBLE, 4, 2, 4, 2, 4, 2);
   DEF_UV(BLOCK_CLAY, 8, 4, 8, 4, 8, 4);
   DEF_UV(BLOCK_PUMPKIN, 6, 6, 7, 7, 6, 6);
+  DEF_UV(BLOCK_SAPLING, 15, 0, 15, 0, 15, 0);
   // Cross-sprite plants (UV tile used for all quads in the X-pattern)
   DEF_UV(BLOCK_TALLGRASS, 7, 2, 7, 2, 7, 2);    // tallgrass col=7, row=2
   DEF_UV(BLOCK_FLOWER, 13, 0, 13, 0, 13, 0); // dandelion col=13, row=0
   DEF_UV(BLOCK_ROSE, 12, 0, 12, 0, 12, 0);    // rose col=12, row=0
-  // Water - classic Minecraft terrain.png: water_still = col13,row12; water_flow = col13,row13
+  // Water - use same atlas tile for still/flow here (some terrain variants store flow in different tile)
   DEF_UV(BLOCK_WATER_STILL, 13, 12, 13, 12, 13, 12);
-  DEF_UV(BLOCK_WATER_FLOW, 13, 13, 13, 13, 13, 13);
+  DEF_UV(BLOCK_WATER_FLOW, 13, 12, 13, 12, 13, 12);
   // Lava - lava_still = col15,row13; lava_flow = col15,row14
   DEF_UV(BLOCK_LAVA_STILL, 15, 13, 15, 13, 15, 13);
   DEF_UV(BLOCK_LAVA_FLOW, 15, 14, 15, 14, 15, 14);
