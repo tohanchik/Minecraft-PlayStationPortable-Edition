@@ -68,6 +68,81 @@ static ChunkRenderer *g_chunkRenderer = nullptr;
 static TextureAtlas *g_atlas = nullptr;
 static RayHit g_hitResult;       // Block the player is currently looking at
 static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
+static int g_placeIdx = 3; // start at cobblestone
+static const uint8_t PLACEABLE[] = {
+  BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
+  BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
+  BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
+  BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK,
+  BLOCK_BOOKSHELF, BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN,
+  BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
+  BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS
+};
+static const int NUM_PLACEABLE = sizeof(PLACEABLE) / sizeof(PLACEABLE[0]);
+
+struct HudVertex {
+  uint32_t color;
+  int16_t x, y, z;
+};
+
+static void drawHudRect(int x0, int y0, int x1, int y1, uint32_t color) {
+  HudVertex *v = (HudVertex *)sceGuGetMemory(2 * sizeof(HudVertex));
+  v[0].color = color; v[0].x = (int16_t)x0; v[0].y = (int16_t)y0; v[0].z = 0;
+  v[1].color = color; v[1].x = (int16_t)x1; v[1].y = (int16_t)y1; v[1].z = 0;
+  sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                 2, 0, v);
+}
+
+static void drawHudLine(int x0, int y0, int x1, int y1, uint32_t color) {
+  HudVertex *v = (HudVertex *)sceGuGetMemory(2 * sizeof(HudVertex));
+  v[0].color = color; v[0].x = (int16_t)x0; v[0].y = (int16_t)y0; v[0].z = 0;
+  v[1].color = color; v[1].x = (int16_t)x1; v[1].y = (int16_t)y1; v[1].z = 0;
+  sceGuDrawArray(GU_LINES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                 2, 0, v);
+}
+
+static void game_render_hud() {
+  const int screenW = 480;
+  const int screenH = 272;
+  const int centerX = screenW / 2;
+  const int centerY = screenH / 2;
+
+  sceGuDisable(GU_DEPTH_TEST);
+  sceGuDisable(GU_TEXTURE_2D);
+  sceGuDisable(GU_CULL_FACE);
+  sceGuEnable(GU_BLEND);
+  sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+
+  // Crosshair (voxelworld-style center reticle)
+  drawHudLine(centerX - 6, centerY, centerX + 6, centerY, 0xD0FFFFFF);
+  drawHudLine(centerX, centerY - 6, centerX, centerY + 6, 0xD0FFFFFF);
+
+  // Simple hotbar strip
+  const int slotW = 18;
+  const int slotH = 18;
+  const int slotGap = 4;
+  const int visibleSlots = 9;
+  const int barW = visibleSlots * slotW + (visibleSlots - 1) * slotGap;
+  const int barX = (screenW - barW) / 2;
+  const int barY = screenH - 26;
+  const int selected = visibleSlots / 2;
+
+  for (int i = 0; i < visibleSlots; ++i) {
+    int x = barX + i * (slotW + slotGap);
+    int y = barY;
+    bool isSel = (i == selected);
+    drawHudRect(x, y, x + slotW, y + slotH, isSel ? 0xA0FFF2A0 : 0x70303030);
+    drawHudLine(x, y, x + slotW, y, 0xC0FFFFFF);
+    drawHudLine(x, y + slotH, x + slotW, y + slotH, 0xC0FFFFFF);
+    drawHudLine(x, y, x, y + slotH, 0xC0FFFFFF);
+    drawHudLine(x + slotW, y, x + slotW, y + slotH, 0xC0FFFFFF);
+  }
+
+  sceGuDisable(GU_BLEND);
+  sceGuEnable(GU_TEXTURE_2D);
+  sceGuEnable(GU_CULL_FACE);
+  sceGuEnable(GU_DEPTH_TEST);
+}
 
 // Initialization
 static bool game_init() {
@@ -334,25 +409,13 @@ static void game_update(float dt) {
   }
 
   // Cycle hotbar
-  static const uint8_t PLACEABLE[] = {
-    BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
-    BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
-    BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
-    BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK,
-    BLOCK_BOOKSHELF, BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN,
-    BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
-    BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS
-  };
-  static const int NUM_PLACEABLE = sizeof(PLACEABLE) / sizeof(PLACEABLE[0]);
-  static int placeIdx = 3; // start at cobblestone
-
   if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) {
-    placeIdx = (placeIdx + 1) % NUM_PLACEABLE;
-    g_heldBlock = PLACEABLE[placeIdx];
+    g_placeIdx = (g_placeIdx + 1) % NUM_PLACEABLE;
+    g_heldBlock = PLACEABLE[g_placeIdx];
   }
   if (PSPInput_JustPressed(PSP_CTRL_LEFT)) {
-    placeIdx = (placeIdx - 1 + NUM_PLACEABLE) % NUM_PLACEABLE;
-    g_heldBlock = PLACEABLE[placeIdx];
+    g_placeIdx = (g_placeIdx - 1 + NUM_PLACEABLE) % NUM_PLACEABLE;
+    g_heldBlock = PLACEABLE[g_placeIdx];
   }
 }
 
@@ -398,7 +461,7 @@ static void game_render() {
   if (g_cloudRenderer)
     g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, 0.0f);
 
-  // TODO: HUD (hotbar, crosshair)
+  game_render_hud();
 
   PSPRenderer_EndFrame();
 }
