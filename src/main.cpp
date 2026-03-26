@@ -69,6 +69,10 @@ static TextureAtlas *g_atlas = nullptr;
 static RayHit g_hitResult;       // Block the player is currently looking at
 static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
 
+static inline bool isWaterId(uint8_t id) {
+  return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
+}
+
 // Initialization
 static bool game_init() {
   // Overclock PSP to max for performance
@@ -122,7 +126,17 @@ static void game_update(float dt) {
     g_level->tick();
   }
 
-  float moveSpeed = (g_player.isFlying ? 10.0f : 5.0f) * dt;
+  bool inWater = false;
+  {
+    int fx = (int)floorf(g_player.x);
+    int fz = (int)floorf(g_player.z);
+    int bodyY = (int)floorf(g_player.y + 0.1f);
+    inWater = isWaterId(g_level->getBlock(fx, bodyY, fz));
+  }
+
+  float baseMoveSpeed = g_player.isFlying ? 10.0f : 5.0f;
+  if (inWater && !g_player.isFlying) baseMoveSpeed *= 0.45f;
+  float moveSpeed = baseMoveSpeed * dt;
   float lookSpeed = 120.0f * dt;
 
   // Rotation with right stick (Face Buttons)
@@ -154,7 +168,15 @@ static void game_update(float dt) {
       dy = -flySpeed;  // Descend
     g_player.velY = 0.0f;
   } else {
-    g_player.velY -= 20.0f * dt;
+    if (inWater) {
+      g_player.velY -= 6.0f * dt;
+      if (PSPInput_IsHeld(PSP_CTRL_SELECT)) {
+        g_player.velY += 9.0f * dt;
+      }
+      g_player.velY *= 0.85f;
+    } else {
+      g_player.velY -= 20.0f * dt;
+    }
     dy = g_player.velY * dt;
   }
 
@@ -179,6 +201,9 @@ static void game_update(float dt) {
   g_player.onGround = (dy_org != dy && dy_org < 0.0f);
   if (g_player.onGround || dy_org != dy) {
     g_player.velY = 0.0f;
+  }
+  if (inWater && !g_player.isFlying) {
+    g_player.velY *= 0.8f;
   }
 
   g_player.x = (player_aabb.x0 + player_aabb.x1) / 2.0f;
@@ -207,6 +232,8 @@ static void game_update(float dt) {
       if (!g_player.isFlying && g_player.onGround) {
         g_player.velY = 6.5f;
         g_player.onGround = false;
+      } else if (!g_player.isFlying && inWater) {
+        g_player.velY = 2.5f;
       }
       g_player.jumpDoubleTapTimer = DOUBLE_TAP_WINDOW;
     }
@@ -378,6 +405,15 @@ static void game_render() {
   uint32_t clearColor = 0xFF000000;
   if (g_skyRenderer) {
       clearColor = g_skyRenderer->getFogColor(_tod, lookDir);
+  }
+  {
+    int wx = (int)floorf(camPos.x);
+    int wy = (int)floorf(camPos.y);
+    int wz = (int)floorf(camPos.z);
+    if (isWaterId(g_level->getBlock(wx, wy, wz))) {
+      // Underwater tint/fog approximation.
+      clearColor = 0xFF4A1C06;
+    }
   }
 
   PSPRenderer_BeginFrame(clearColor);
