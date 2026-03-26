@@ -67,7 +67,190 @@ static CloudRenderer *g_cloudRenderer = nullptr;
 static ChunkRenderer *g_chunkRenderer = nullptr;
 static TextureAtlas *g_atlas = nullptr;
 static RayHit g_hitResult;       // Block the player is currently looking at
-static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
+static bool g_inventoryOpen = false;
+static const uint8_t PLACEABLE[] = {
+  BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
+  BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
+  BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
+  BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK,
+  BLOCK_BOOKSHELF, BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN,
+  BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
+  BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS
+};
+static const int NUM_PLACEABLE = sizeof(PLACEABLE) / sizeof(PLACEABLE[0]);
+static uint8_t g_hotbar[9] = {0}; // 0 = empty slot
+static int g_hotbarSelected = 0;
+static int g_inventoryCursor = 0;
+static bool g_inventoryDragging = false;
+static uint8_t g_dragBlock = BLOCK_AIR;
+
+struct HudVertex {
+  uint32_t color;
+  int16_t x, y, z;
+};
+
+struct HudTexVertex {
+  int16_t u, v;
+  uint32_t color;
+  int16_t x, y, z;
+};
+
+static void drawHudRect(int x0, int y0, int x1, int y1, uint32_t color) {
+  HudVertex *v = (HudVertex *)sceGuGetMemory(2 * sizeof(HudVertex));
+  v[0].color = color; v[0].x = (int16_t)x0; v[0].y = (int16_t)y0; v[0].z = 0;
+  v[1].color = color; v[1].x = (int16_t)x1; v[1].y = (int16_t)y1; v[1].z = 0;
+  sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                 2, 0, v);
+}
+
+static void drawHudLine(int x0, int y0, int x1, int y1, uint32_t color) {
+  HudVertex *v = (HudVertex *)sceGuGetMemory(2 * sizeof(HudVertex));
+  v[0].color = color; v[0].x = (int16_t)x0; v[0].y = (int16_t)y0; v[0].z = 0;
+  v[1].color = color; v[1].x = (int16_t)x1; v[1].y = (int16_t)y1; v[1].z = 0;
+  sceGuDrawArray(GU_LINES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                 2, 0, v);
+}
+
+static void drawHudBlockIcon(int x, int y, int size, uint8_t blockId, uint8_t alpha = 0xFF) {
+  if (!g_atlas || blockId == BLOCK_AIR) return;
+
+  const BlockUV &uv = g_blockUV[blockId];
+  int16_t u0 = (int16_t)(uv.top_x * 16 + 1);
+  int16_t v0 = (int16_t)(uv.top_y * 16 + 1);
+  int16_t u1 = (int16_t)(u0 + 14);
+  int16_t v1 = (int16_t)(v0 + 14);
+
+  HudTexVertex *v = (HudTexVertex *)sceGuGetMemory(2 * sizeof(HudTexVertex));
+  v[0].u = u0; v[0].v = v0; v[0].color = ((uint32_t)alpha << 24) | 0x00FFFFFF; v[0].x = (int16_t)x; v[0].y = (int16_t)y; v[0].z = 0;
+  v[1].u = u1; v[1].v = v1; v[1].color = ((uint32_t)alpha << 24) | 0x00FFFFFF; v[1].x = (int16_t)(x + size); v[1].y = (int16_t)(y + size); v[1].z = 0;
+  sceGuDrawArray(GU_SPRITES,
+                 GU_TEXTURE_16BIT | GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D,
+                 2, 0, v);
+}
+
+static void game_render_hud() {
+  const int screenW = 480;
+  const int screenH = 272;
+  const int centerX = screenW / 2;
+  const int centerY = screenH / 2;
+
+  sceGuDisable(GU_DEPTH_TEST);
+  sceGuDisable(GU_TEXTURE_2D);
+  sceGuDisable(GU_CULL_FACE);
+  sceGuEnable(GU_BLEND);
+  sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+
+  // Crosshair (voxelworld-style center reticle)
+  drawHudLine(centerX - 6, centerY, centerX + 6, centerY, 0xD0FFFFFF);
+  drawHudLine(centerX, centerY - 6, centerX, centerY + 6, 0xD0FFFFFF);
+
+  // Simple hotbar strip (empty by default; filled from inventory)
+  const int slotW = 18;
+  const int slotH = 18;
+  const int slotGap = 4;
+  const int visibleSlots = 9;
+  const int barW = visibleSlots * slotW + (visibleSlots - 1) * slotGap;
+  const int barX = (screenW - barW) / 2;
+  const int barY = screenH - 26;
+
+  for (int i = 0; i < visibleSlots; ++i) {
+    int x = barX + i * (slotW + slotGap);
+    int y = barY;
+    bool isSel = (i == g_hotbarSelected);
+    bool hasItem = (g_hotbar[i] != BLOCK_AIR);
+    uint32_t bg = hasItem ? 0xA03A3A3A : 0x50101010;
+    if (isSel && !g_inventoryOpen) bg = 0xB0707070;
+    if (isSel && g_inventoryDragging) bg = 0xC0909090;
+    drawHudRect(x, y, x + slotW, y + slotH, bg);
+    drawHudLine(x, y, x + slotW, y, 0xC0FFFFFF);
+    drawHudLine(x, y + slotH, x + slotW, y + slotH, 0xC0FFFFFF);
+    drawHudLine(x, y, x, y + slotH, 0xC0FFFFFF);
+    drawHudLine(x + slotW, y, x + slotW, y + slotH, 0xC0FFFFFF);
+  }
+
+  // Draw textured block icons in hotbar
+  sceGuEnable(GU_TEXTURE_2D);
+  g_atlas->bind();
+  sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+  for (int i = 0; i < visibleSlots; ++i) {
+    if (g_hotbar[i] == BLOCK_AIR) continue;
+    int x = barX + i * (slotW + slotGap) + 1;
+    int y = barY + 1;
+    drawHudBlockIcon(x, y, slotW - 2, g_hotbar[i], 0xFF);
+  }
+  sceGuDisable(GU_TEXTURE_2D);
+
+  if (g_inventoryOpen) {
+    const int cols = 6;
+    const int invSlots = NUM_PLACEABLE;
+    const int rows = (invSlots + cols - 1) / cols;
+    const int invSlotW = 22;
+    const int invSlotH = 22;
+    const int invGap = 4;
+    const int invW = cols * invSlotW + (cols - 1) * invGap + 12;
+    const int invH = rows * invSlotH + (rows - 1) * invGap + 12;
+    const int invX = (screenW - invW) / 2;
+    const int invY = 24;
+
+    drawHudRect(invX, invY, invX + invW, invY + invH, 0xB0101010);
+    drawHudLine(invX, invY, invX + invW, invY, 0xD0FFFFFF);
+    drawHudLine(invX, invY + invH, invX + invW, invY + invH, 0xD0FFFFFF);
+    drawHudLine(invX, invY, invX, invY + invH, 0xD0FFFFFF);
+    drawHudLine(invX + invW, invY, invX + invW, invY + invH, 0xD0FFFFFF);
+
+    for (int i = 0; i < invSlots; ++i) {
+      int cx = i % cols;
+      int cy = i / cols;
+      int x = invX + 6 + cx * (invSlotW + invGap);
+      int y = invY + 6 + cy * (invSlotH + invGap);
+      bool isCursor = (i == g_inventoryCursor);
+      uint32_t fill = isCursor ? 0xB0606060 : 0x90202020;
+      drawHudRect(x, y, x + invSlotW, y + invSlotH, fill);
+      drawHudLine(x, y, x + invSlotW, y, 0xC0E0E0FF);
+      drawHudLine(x, y + invSlotH, x + invSlotW, y + invSlotH, 0xC0E0E0FF);
+      drawHudLine(x, y, x, y + invSlotH, 0xC0E0E0FF);
+      drawHudLine(x + invSlotW, y, x + invSlotW, y + invSlotH, 0xC0E0E0FF);
+    }
+
+    // Draw textured inventory icons
+    sceGuEnable(GU_TEXTURE_2D);
+    g_atlas->bind();
+    sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+    for (int i = 0; i < invSlots; ++i) {
+      int cx = i % cols;
+      int cy = i / cols;
+      int x = invX + 6 + cx * (invSlotW + invGap) + 2;
+      int y = invY + 6 + cy * (invSlotH + invGap) + 2;
+      drawHudBlockIcon(x, y, invSlotH - 4, PLACEABLE[i], 0xFF);
+    }
+    sceGuDisable(GU_TEXTURE_2D);
+
+    if (g_inventoryDragging && g_dragBlock != BLOCK_AIR) {
+      // Drag preview in the top-right corner of inventory
+      int px = invX + invW - 26;
+      int py = invY + 6;
+      drawHudRect(px, py, px + 18, py + 18, 0xD0404040);
+      sceGuEnable(GU_TEXTURE_2D);
+      g_atlas->bind();
+      sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+      drawHudBlockIcon(px + 1, py + 1, 16, g_dragBlock, 0xFF);
+      sceGuDisable(GU_TEXTURE_2D);
+      drawHudLine(px, py, px + 18, py, 0xE0FFFFFF);
+      drawHudLine(px, py + 18, px + 18, py + 18, 0xE0FFFFFF);
+      drawHudLine(px, py, px, py + 18, 0xE0FFFFFF);
+      drawHudLine(px + 18, py, px + 18, py + 18, 0xE0FFFFFF);
+    }
+  }
+
+  sceGuDisable(GU_BLEND);
+  sceGuEnable(GU_TEXTURE_2D);
+  if (g_atlas) {
+    g_atlas->bind();
+    sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+  }
+  sceGuEnable(GU_CULL_FACE);
+  sceGuEnable(GU_DEPTH_TEST);
+}
 
 // Initialization
 static bool game_init() {
@@ -118,6 +301,63 @@ static bool game_init() {
 // Game loop update
 static void game_update(float dt) {
   PSPInput_Update();
+
+  static bool lrComboWasHeld = false;
+  bool lrComboHeld = PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && PSPInput_IsHeld(PSP_CTRL_RTRIGGER);
+  if (lrComboHeld && !lrComboWasHeld) {
+    g_inventoryOpen = !g_inventoryOpen;
+    if (!g_inventoryOpen) {
+      g_inventoryDragging = false;
+      g_dragBlock = BLOCK_AIR;
+    }
+  }
+  lrComboWasHeld = lrComboHeld;
+
+  if (g_inventoryOpen) {
+    const int cols = 6;
+    const int rows = (NUM_PLACEABLE + cols - 1) / cols;
+    int cx = g_inventoryCursor % cols;
+    int cy = g_inventoryCursor / cols;
+
+    if (!g_inventoryDragging) {
+      if (PSPInput_JustPressed(PSP_CTRL_LEFT)) cx--;
+      if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) cx++;
+      if (PSPInput_JustPressed(PSP_CTRL_UP)) cy--;
+      if (PSPInput_JustPressed(PSP_CTRL_DOWN)) cy++;
+
+      if (cx < 0) cx = cols - 1;
+      if (cx >= cols) cx = 0;
+      if (cy < 0) cy = rows - 1;
+      if (cy >= rows) cy = 0;
+
+      int next = cy * cols + cx;
+      if (next >= NUM_PLACEABLE) next = NUM_PLACEABLE - 1;
+      g_inventoryCursor = next;
+    }
+
+    // Move hotbar focus with dpad while dragging selected block from inventory
+    if (g_inventoryDragging) {
+      if (PSPInput_JustPressed(PSP_CTRL_LEFT))
+        g_hotbarSelected = (g_hotbarSelected - 1 + 9) % 9;
+      if (PSPInput_JustPressed(PSP_CTRL_RIGHT))
+        g_hotbarSelected = (g_hotbarSelected + 1) % 9;
+    }
+
+    // Select block from inventory with X
+    if (PSPInput_JustPressed(PSP_CTRL_CROSS)) {
+      if (!g_inventoryDragging) {
+        g_dragBlock = PLACEABLE[g_inventoryCursor];
+        g_inventoryDragging = true;
+      } else {
+        g_hotbar[g_hotbarSelected] = g_dragBlock;
+        g_inventoryDragging = false;
+        g_dragBlock = BLOCK_AIR;
+      }
+    }
+
+    return;
+  }
+
   if (g_level) {
     g_level->tick();
   }
@@ -253,7 +493,7 @@ static void game_update(float dt) {
       // Rebuild the central chunk synchronously
       int cx = bx >> 4, cz = bz >> 4, sy = by >> 4;
       g_chunkRenderer->rebuildChunkNow(cx, cz, sy);
-      
+
       // Rebuild neighbor chunks
       if ((bx & 0xF) == 0  && cx > 0)
         g_chunkRenderer->rebuildChunkNow(cx - 1, cz, sy);
@@ -271,89 +511,76 @@ static void game_update(float dt) {
   }
 
   // Place block
-  if (PSPInput_JustPressed(PSP_CTRL_UP) && g_hitResult.hit) {
-    int px = g_hitResult.nx;
-    int py = g_hitResult.ny;
-    int pz = g_hitResult.nz;
+  if (PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && g_hitResult.hit) {
+    uint8_t heldBlock = g_hotbar[g_hotbarSelected];
+    if (heldBlock != BLOCK_AIR) {
+      int px = g_hitResult.nx;
+      int py = g_hitResult.ny;
+      int pz = g_hitResult.nz;
 
-    // If we click on a plant, replace the plant directly instead of placing adjacent
-    uint8_t hitId = g_level->getBlock(g_hitResult.x, g_hitResult.y, g_hitResult.z);
-    if (hitId != BLOCK_AIR && !g_blockProps[hitId].isSolid() && !g_blockProps[hitId].isLiquid()) {
-      px = g_hitResult.x;
-      py = g_hitResult.y;
-      pz = g_hitResult.z;
-    }
+      // If we click on a plant, replace the plant directly instead of placing adjacent
+      uint8_t hitId = g_level->getBlock(g_hitResult.x, g_hitResult.y, g_hitResult.z);
+      if (hitId != BLOCK_AIR && !g_blockProps[hitId].isSolid() && !g_blockProps[hitId].isLiquid()) {
+        px = g_hitResult.x;
+        py = g_hitResult.y;
+        pz = g_hitResult.z;
+      }
 
-    // If we are placing a plant, check if the block below is valid soil (grass/dirt/farmland)
-    bool canPlace = true;
-    if (g_heldBlock == BLOCK_SAPLING || g_heldBlock == BLOCK_TALLGRASS || g_heldBlock == BLOCK_FLOWER || 
-        g_heldBlock == BLOCK_ROSE || g_heldBlock == BLOCK_MUSHROOM_BROWN || g_heldBlock == BLOCK_MUSHROOM_RED) {
-      uint8_t floorId = g_level->getBlock(px, py - 1, pz);
-      if (floorId != BLOCK_GRASS && floorId != BLOCK_DIRT && floorId != BLOCK_FARMLAND) {
-        canPlace = false;
+      // If we are placing a plant, check if the block below is valid soil (grass/dirt/farmland)
+      bool canPlace = true;
+      if (heldBlock == BLOCK_SAPLING || heldBlock == BLOCK_TALLGRASS || heldBlock == BLOCK_FLOWER ||
+          heldBlock == BLOCK_ROSE || heldBlock == BLOCK_MUSHROOM_BROWN || heldBlock == BLOCK_MUSHROOM_RED) {
+        uint8_t floorId = g_level->getBlock(px, py - 1, pz);
+        if (floorId != BLOCK_GRASS && floorId != BLOCK_DIRT && floorId != BLOCK_FARMLAND) {
+          canPlace = false;
+        }
+      }
+
+      // Don't place if it would overlap with the player
+      int playerMinX = (int)floorf(g_player.x - R);
+      int playerMaxX = (int)floorf(g_player.x + R);
+      int playerMinY = (int)floorf(g_player.y);
+      int playerMaxY = (int)floorf(g_player.y + H);
+      int playerMinZ = (int)floorf(g_player.z - R);
+      int playerMaxZ = (int)floorf(g_player.z + R);
+
+      bool overlaps = (px >= playerMinX && px <= playerMaxX &&
+                       py >= playerMinY && py <= playerMaxY &&
+                       pz >= playerMinZ && pz <= playerMaxZ);
+
+      uint8_t targetBlock = g_level->getBlock(px, py, pz);
+      bool canReplaceTarget = (targetBlock == BLOCK_AIR || (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
+
+      if (canPlace && !overlaps && canReplaceTarget) {
+        g_level->setBlock(px, py, pz, heldBlock);
+        g_level->markDirty(px, py, pz);
+
+        // Immediately rebuild the central subchunk
+        int cx = px >> 4, cz = pz >> 4, sy = py >> 4;
+        g_chunkRenderer->rebuildChunkNow(cx, cz, sy);
+
+        // Synchronously rebuild neighbor chunks at chunk boundaries
+        if ((px & 0xF) == 0  && cx > 0)
+          g_chunkRenderer->rebuildChunkNow(cx - 1, cz, sy);
+        if ((px & 0xF) == 15 && cx < WORLD_CHUNKS_X - 1)
+          g_chunkRenderer->rebuildChunkNow(cx + 1, cz, sy);
+        if ((pz & 0xF) == 0  && cz > 0)
+          g_chunkRenderer->rebuildChunkNow(cx, cz - 1, sy);
+        if ((pz & 0xF) == 15 && cz < WORLD_CHUNKS_Z - 1)
+          g_chunkRenderer->rebuildChunkNow(cx, cz + 1, sy);
+        if ((py & 0xF) == 0  && sy > 0)
+          g_chunkRenderer->rebuildChunkNow(cx, cz, sy - 1);
+        if ((py & 0xF) == 15 && sy < 3)
+          g_chunkRenderer->rebuildChunkNow(cx, cz, sy + 1);
       }
     }
-
-    // Don't place if it would overlap with the player
-    int playerMinX = (int)floorf(g_player.x - R);
-    int playerMaxX = (int)floorf(g_player.x + R);
-    int playerMinY = (int)floorf(g_player.y);
-    int playerMaxY = (int)floorf(g_player.y + H);
-    int playerMinZ = (int)floorf(g_player.z - R);
-    int playerMaxZ = (int)floorf(g_player.z + R);
-
-    bool overlaps = (px >= playerMinX && px <= playerMaxX &&
-                     py >= playerMinY && py <= playerMaxY &&
-                     pz >= playerMinZ && pz <= playerMaxZ);
-
-    uint8_t targetBlock = g_level->getBlock(px, py, pz);
-    bool canReplaceTarget = (targetBlock == BLOCK_AIR || (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
-
-    if (canPlace && !overlaps && canReplaceTarget) {
-      g_level->setBlock(px, py, pz, g_heldBlock);
-      g_level->markDirty(px, py, pz);
-
-      // Immediately rebuild the central subchunk
-      int cx = px >> 4, cz = pz >> 4, sy = py >> 4;
-      g_chunkRenderer->rebuildChunkNow(cx, cz, sy);
-      
-      // Synchronously rebuild neighbor chunks at chunk boundaries
-      if ((px & 0xF) == 0  && cx > 0)
-        g_chunkRenderer->rebuildChunkNow(cx - 1, cz, sy);
-      if ((px & 0xF) == 15 && cx < WORLD_CHUNKS_X - 1)
-        g_chunkRenderer->rebuildChunkNow(cx + 1, cz, sy);
-      if ((pz & 0xF) == 0  && cz > 0)
-        g_chunkRenderer->rebuildChunkNow(cx, cz - 1, sy);
-      if ((pz & 0xF) == 15 && cz < WORLD_CHUNKS_Z - 1)
-        g_chunkRenderer->rebuildChunkNow(cx, cz + 1, sy);
-      if ((py & 0xF) == 0  && sy > 0)
-        g_chunkRenderer->rebuildChunkNow(cx, cz, sy - 1);
-      if ((py & 0xF) == 15 && sy < 3)
-        g_chunkRenderer->rebuildChunkNow(cx, cz, sy + 1);
-    }
   }
 
-  // Cycle hotbar
-  static const uint8_t PLACEABLE[] = {
-    BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
-    BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
-    BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
-    BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK,
-    BLOCK_BOOKSHELF, BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN,
-    BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
-    BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS
-  };
-  static const int NUM_PLACEABLE = sizeof(PLACEABLE) / sizeof(PLACEABLE[0]);
-  static int placeIdx = 3; // start at cobblestone
-
-  if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) {
-    placeIdx = (placeIdx + 1) % NUM_PLACEABLE;
-    g_heldBlock = PLACEABLE[placeIdx];
-  }
-  if (PSPInput_JustPressed(PSP_CTRL_LEFT)) {
-    placeIdx = (placeIdx - 1 + NUM_PLACEABLE) % NUM_PLACEABLE;
-    g_heldBlock = PLACEABLE[placeIdx];
-  }
+  // Cycle active hotbar slot
+  if (PSPInput_JustPressed(PSP_CTRL_LEFT))
+    g_hotbarSelected = (g_hotbarSelected - 1 + 9) % 9;
+  if (PSPInput_JustPressed(PSP_CTRL_RIGHT))
+    g_hotbarSelected = (g_hotbarSelected + 1) % 9;
 }
 
 static void game_render() {
@@ -361,7 +588,7 @@ static void game_render() {
 
   // Camera setup
   ScePspFVector3 camPos = {g_player.x, g_player.y + 1.62f, g_player.z}; // 4J: heightOffset = 1.62
-  
+
   float yawRad = g_player.yaw * Mth::DEGRAD;
   float pitchRad = g_player.pitch * Mth::DEGRAD;
 
@@ -398,7 +625,7 @@ static void game_render() {
   if (g_cloudRenderer)
     g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, 0.0f);
 
-  // TODO: HUD (hotbar, crosshair)
+  game_render_hud();
 
   PSPRenderer_EndFrame();
 }
