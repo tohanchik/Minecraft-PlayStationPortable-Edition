@@ -1,0 +1,33 @@
+name: Build PSP EBOOT
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/pspdev/pspdev:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: make -j"$(nproc)"
+
+      - name: Assemble distributable package
+        run: |
+          mkdir -p dist/MinecraftPSP
+          cp EBOOT.PBP dist/MinecraftPSP/
+          cp -R res dist/MinecraftPSP/
+
+      - name: Upload PSP package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MinecraftPSP-package
+          path: |
+            dist/MinecraftPSP
