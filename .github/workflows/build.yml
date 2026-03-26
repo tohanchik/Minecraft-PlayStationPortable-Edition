@@ -31,3 +31,4 @@ jobs:
           name: MinecraftPSP-package
           path: |
             dist/MinecraftPSP
+
