@@ -11,6 +11,10 @@ struct LightNode {
 
 Level::Level() {
   memset(m_chunks, 0, sizeof(m_chunks));
+  int waterCellCount = WORLD_CHUNKS_X * CHUNK_SIZE_X * CHUNK_SIZE_Y * WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  m_waterLevels.assign(waterCellCount, 0);
+  m_waterActiveMask.assign(waterCellCount, 0);
+  m_activeWaterCells.reserve(8192);
   for (int cx = 0; cx < WORLD_CHUNKS_X; cx++)
     for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++)
       m_chunks[cx][cz] = new Chunk();
@@ -63,7 +67,224 @@ void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
   if (oldId == id) return;
   
   m_chunks[cx][cz]->setBlock(wx & 0xF, wy, wz & 0xF, id);
+  if (id == BLOCK_WATER_STILL) setWaterLevel(wx, wy, wz, 7);
+  else if (id == BLOCK_WATER_FLOW) {
+    uint8_t prev = getWaterLevel(wx, wy, wz);
+    setWaterLevel(wx, wy, wz, prev ? prev : 6);
+  } else {
+    setWaterLevel(wx, wy, wz, 0);
+  }
+  activateWaterCell(wx, wy, wz);
+  activateWaterCell(wx + 1, wy, wz);
+  activateWaterCell(wx - 1, wy, wz);
+  activateWaterCell(wx, wy + 1, wz);
+  activateWaterCell(wx, wy - 1, wz);
+  activateWaterCell(wx, wy, wz + 1);
+  activateWaterCell(wx, wy, wz - 1);
   updateLight(wx, wy, wz);
+}
+
+int Level::worldIndex(int wx, int wy, int wz) const {
+  int worldX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int worldZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  return (wy * worldZ + wz) * worldX + wx;
+}
+
+bool Level::inWorld(int wx, int wy, int wz) const {
+  return wx >= 0 && wx < WORLD_CHUNKS_X * CHUNK_SIZE_X &&
+         wy >= 0 && wy < CHUNK_SIZE_Y &&
+         wz >= 0 && wz < WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+}
+
+bool Level::isWaterBlock(uint8_t id) const {
+  return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
+}
+
+bool Level::canWaterReplace(uint8_t id) const {
+  if (id == BLOCK_AIR) return true;
+  if (isWaterBlock(id)) return true;
+  if (g_blockProps[id].isSolid()) return false;
+  if (g_blockProps[id].isLiquid()) return false;
+  return true;
+}
+
+uint8_t Level::getWaterLevel(int wx, int wy, int wz) const {
+  if (!inWorld(wx, wy, wz)) return 0;
+  return m_waterLevels[worldIndex(wx, wy, wz)];
+}
+
+void Level::setWaterLevel(int wx, int wy, int wz, uint8_t level) {
+  if (!inWorld(wx, wy, wz)) return;
+  m_waterLevels[worldIndex(wx, wy, wz)] = level;
+}
+
+void Level::activateWaterCell(int wx, int wy, int wz) {
+  if (!inWorld(wx, wy, wz)) return;
+  int idx = worldIndex(wx, wy, wz);
+  if (m_waterActiveMask[idx]) return;
+  m_waterActiveMask[idx] = 1;
+  m_activeWaterCells.push_back(idx);
+}
+
+void Level::initializeWaterState() {
+  std::fill(m_waterLevels.begin(), m_waterLevels.end(), 0);
+  std::fill(m_waterActiveMask.begin(), m_waterActiveMask.end(), 0);
+  m_activeWaterCells.clear();
+  int worldX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int worldZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  for (int y = 0; y < CHUNK_SIZE_Y; y++) {
+    for (int z = 0; z < worldZ; z++) {
+      for (int x = 0; x < worldX; x++) {
+        uint8_t id = getBlock(x, y, z);
+        if (id == BLOCK_WATER_STILL) {
+          setWaterLevel(x, y, z, 7);
+          activateWaterCell(x, y, z);
+        } else if (id == BLOCK_WATER_FLOW) {
+          setWaterLevel(x, y, z, 6);
+          activateWaterCell(x, y, z);
+        }
+      }
+    }
+  }
+}
+
+void Level::queueWaterUpdate(std::vector<WaterUpdate> &updates, int wx, int wy, int wz, uint8_t id, uint8_t level) {
+  if (!inWorld(wx, wy, wz)) return;
+  for (auto &u : updates) {
+    if (u.x == wx && u.y == wy && u.z == wz) {
+      if (u.level < level) {
+        u.id = id;
+        u.level = level;
+      }
+      return;
+    }
+  }
+  updates.push_back({wx, wy, wz, id, level});
+}
+
+void Level::simulateWaterStep() {
+  std::vector<WaterUpdate> updates;
+  updates.reserve(4096);
+  const int dx[4] = {1, -1, 0, 0};
+  const int dz[4] = {0, 0, 1, -1};
+  std::vector<int> processing;
+  processing.swap(m_activeWaterCells);
+  for (int idx : processing) m_waterActiveMask[idx] = 0;
+
+  if (processing.empty()) return;
+
+  const int worldX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  const int worldZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+
+  for (int idx : processing) {
+    int x = idx % worldX;
+    int yz = idx / worldX;
+    int z = yz % worldZ;
+    int y = yz / worldZ;
+    uint8_t id = getBlock(x, y, z);
+    if (!isWaterBlock(id)) continue;
+
+    uint8_t level = getWaterLevel(x, y, z);
+    if (id == BLOCK_WATER_STILL) level = 7;
+    if (level == 0) level = 6;
+    bool source = (id == BLOCK_WATER_STILL);
+
+    // Falling column downgrades if no water above (voxelworld behavior)
+    if (!source && level == 8) {
+      uint8_t aboveId = getBlock(x, y + 1, z);
+      if (!(aboveId == BLOCK_WATER_STILL || aboveId == BLOCK_WATER_FLOW)) {
+        level = 6;
+        queueWaterUpdate(updates, x, y, z, BLOCK_WATER_FLOW, 6);
+      }
+    }
+
+    // Fall down first
+    if (y > 0) {
+      int by = y - 1;
+      uint8_t below = getBlock(x, by, z);
+      if (canWaterReplace(below)) {
+        queueWaterUpdate(updates, x, by, z, BLOCK_WATER_FLOW, 8);
+        if (!source && level != 7) {
+          uint8_t newLevel = (level > 1) ? (level - 1) : 0;
+          queueWaterUpdate(updates, x, y, z, newLevel ? BLOCK_WATER_FLOW : BLOCK_AIR, newLevel);
+        }
+        continue;
+      }
+    }
+
+    // Horizontal spread
+    uint8_t spreadLevel = source ? 6 : ((level == 8) ? 6 : (level > 1 ? level - 1 : 0));
+    if (spreadLevel > 0) {
+      for (int i = 0; i < 4; i++) {
+        int nx = x + dx[i], nz = z + dz[i];
+        if (!inWorld(nx, y, nz)) continue;
+        uint8_t nb = getBlock(nx, y, nz);
+        if (!canWaterReplace(nb)) continue;
+        uint8_t existing = getWaterLevel(nx, y, nz);
+        if (nb == BLOCK_WATER_STILL) existing = 7;
+        if (!isWaterBlock(nb) || existing + 1 < spreadLevel) {
+          queueWaterUpdate(updates, nx, y, nz, BLOCK_WATER_FLOW, spreadLevel);
+        }
+      }
+    }
+
+    // Decay non-source water if unsupported by neighbors
+    if (!source) {
+      uint8_t best = 0;
+      if (y + 1 < CHUNK_SIZE_Y && isWaterBlock(getBlock(x, y + 1, z))) best = 8;
+      for (int i = 0; i < 4; i++) {
+        int nx = x + dx[i], nz = z + dz[i];
+        uint8_t nb = getBlock(nx, y, nz);
+        if (!isWaterBlock(nb)) continue;
+        uint8_t nl = getWaterLevel(nx, y, nz);
+        if (nb == BLOCK_WATER_STILL) nl = 7;
+        if (nl > 1 && nl - 1 > best) best = nl - 1;
+      }
+      if (best == 0) {
+        queueWaterUpdate(updates, x, y, z, BLOCK_AIR, 0);
+      } else {
+        // Flowing water must stay flowing; only placed/source water is still.
+        queueWaterUpdate(updates, x, y, z, BLOCK_WATER_FLOW, best);
+      }
+    } else {
+      queueWaterUpdate(updates, x, y, z, BLOCK_WATER_STILL, 7);
+    }
+  }
+
+  for (const auto &u : updates) {
+    uint8_t cur = getBlock(u.x, u.y, u.z);
+    if (u.id == BLOCK_AIR) {
+      if (isWaterBlock(cur)) {
+        setBlock(u.x, u.y, u.z, BLOCK_AIR);
+        setWaterLevel(u.x, u.y, u.z, 0);
+        markDirty(u.x, u.y, u.z);
+        activateWaterCell(u.x + 1, u.y, u.z);
+        activateWaterCell(u.x - 1, u.y, u.z);
+        activateWaterCell(u.x, u.y + 1, u.z);
+        activateWaterCell(u.x, u.y - 1, u.z);
+        activateWaterCell(u.x, u.y, u.z + 1);
+        activateWaterCell(u.x, u.y, u.z - 1);
+      }
+      continue;
+    }
+
+    if (u.id == BLOCK_WATER_FLOW || u.id == BLOCK_WATER_STILL) {
+      if (!isWaterBlock(cur)) {
+        setBlock(u.x, u.y, u.z, u.id);
+      } else if (cur != u.id) {
+        setBlock(u.x, u.y, u.z, u.id);
+      }
+      setWaterLevel(u.x, u.y, u.z, u.level);
+      markDirty(u.x, u.y, u.z);
+      activateWaterCell(u.x, u.y, u.z);
+      activateWaterCell(u.x + 1, u.y, u.z);
+      activateWaterCell(u.x - 1, u.y, u.z);
+      activateWaterCell(u.x, u.y + 1, u.z);
+      activateWaterCell(u.x, u.y - 1, u.z);
+      activateWaterCell(u.x, u.y, u.z + 1);
+      activateWaterCell(u.x, u.y, u.z - 1);
+    }
+  }
 }
 
 std::vector<AABB> Level::getCubes(const AABB& box) const {
@@ -160,6 +381,7 @@ void Level::generate(Random *rng) {
     }
   }
 
+  initializeWaterState();
   computeLighting();
 }
 
