@@ -3,6 +3,7 @@
 #include "AABB.h"
 #include <math.h>
 #include <vector>
+#include <stdint.h>
 
 class Random;
 
@@ -67,10 +68,30 @@ public:
   void tick() {
     // Advance time
     m_time += 1;
+    // Simulate water every 2 ticks to keep PSP perf stable
+    if ((m_time & 1LL) == 0) {
+      simulateWaterStep();
+    }
   }
 
 private:
+  struct WaterUpdate {
+    int x, y, z;
+    uint8_t id;
+    uint8_t level;
+  };
+
+  int worldIndex(int wx, int wy, int wz) const;
+  bool inWorld(int wx, int wy, int wz) const;
+  bool isWaterBlock(uint8_t id) const;
+  bool canWaterReplace(uint8_t id) const;
+  uint8_t getWaterLevel(int wx, int wy, int wz) const;
+  void setWaterLevel(int wx, int wy, int wz, uint8_t level);
+  void queueWaterUpdate(std::vector<WaterUpdate> &updates, int wx, int wy, int wz, uint8_t id, uint8_t level);
+  void simulateWaterStep();
+
   Chunk *m_chunks[WORLD_CHUNKS_X][WORLD_CHUNKS_Z];
+  std::vector<uint8_t> m_waterLevels;
   long long m_time = 6000LL;
   float m_lastSunBrightness = 1.0f;
 };
