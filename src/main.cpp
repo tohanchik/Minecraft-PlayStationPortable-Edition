@@ -68,6 +68,25 @@ static ChunkRenderer *g_chunkRenderer = nullptr;
 static TextureAtlas *g_atlas = nullptr;
 static RayHit g_hitResult;       // Block the player is currently looking at
 static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
+static bool g_inventoryOpen = false;
+static int g_hotbarSel = 0;
+static int g_inventorySel = 0;
+static uint8_t g_hotbar[9] = {
+  BLOCK_COBBLESTONE, BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD_PLANK, BLOCK_GLASS,
+  BLOCK_SAND, BLOCK_LOG, BLOCK_LEAVES, BLOCK_WATER_STILL
+};
+static const uint8_t g_inventoryItems[] = {
+  BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
+  BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
+  BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
+  BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK, BLOCK_BOOKSHELF,
+  BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN, BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
+  BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_WATER_STILL
+};
+
+static inline bool isWaterId(uint8_t id) {
+  return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
+}
 
 // Initialization
 static bool game_init() {
@@ -111,6 +130,8 @@ static bool game_init() {
   g_player.onGround = false;
   g_player.isFlying = false;
   g_player.jumpDoubleTapTimer = 0.0f;
+  g_heldBlock = g_hotbar[g_hotbarSel];
+  pspDebugScreenInit();
 
   return true;
 }
@@ -122,7 +143,17 @@ static void game_update(float dt) {
     g_level->tick();
   }
 
-  float moveSpeed = (g_player.isFlying ? 10.0f : 5.0f) * dt;
+  bool inWater = false;
+  {
+    int fx = (int)floorf(g_player.x);
+    int fz = (int)floorf(g_player.z);
+    int bodyY = (int)floorf(g_player.y + 0.1f);
+    inWater = isWaterId(g_level->getBlock(fx, bodyY, fz));
+  }
+
+  float baseMoveSpeed = g_player.isFlying ? 10.0f : 5.0f;
+  if (inWater && !g_player.isFlying) baseMoveSpeed *= 0.45f;
+  float moveSpeed = baseMoveSpeed * dt;
   float lookSpeed = 120.0f * dt;
 
   // Rotation with right stick (Face Buttons)
@@ -154,7 +185,15 @@ static void game_update(float dt) {
       dy = -flySpeed;  // Descend
     g_player.velY = 0.0f;
   } else {
-    g_player.velY -= 20.0f * dt;
+    if (inWater) {
+      g_player.velY -= 6.0f * dt;
+      if (PSPInput_IsHeld(PSP_CTRL_SELECT)) {
+        g_player.velY += 9.0f * dt;
+      }
+      g_player.velY *= 0.85f;
+    } else {
+      g_player.velY -= 20.0f * dt;
+    }
     dy = g_player.velY * dt;
   }
 
@@ -179,6 +218,9 @@ static void game_update(float dt) {
   g_player.onGround = (dy_org != dy && dy_org < 0.0f);
   if (g_player.onGround || dy_org != dy) {
     g_player.velY = 0.0f;
+  }
+  if (inWater && !g_player.isFlying) {
+    g_player.velY *= 0.8f;
   }
 
   g_player.x = (player_aabb.x0 + player_aabb.x1) / 2.0f;
@@ -207,6 +249,8 @@ static void game_update(float dt) {
       if (!g_player.isFlying && g_player.onGround) {
         g_player.velY = 6.5f;
         g_player.onGround = false;
+      } else if (!g_player.isFlying && inWater) {
+        g_player.velY = 2.5f;
       }
       g_player.jumpDoubleTapTimer = DOUBLE_TAP_WINDOW;
     }
@@ -227,6 +271,26 @@ static void game_update(float dt) {
   // Block action cooldown
   static float breakCooldown = 0.0f;
   if (breakCooldown > 0.0f) breakCooldown -= dt;
+
+  // Inventory/hotbar controls
+  if (PSPInput_JustPressed(PSP_CTRL_TRIANGLE)) {
+    g_inventoryOpen = !g_inventoryOpen;
+  }
+  if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) {
+    g_hotbarSel = (g_hotbarSel + 1) % 9;
+  }
+  if (PSPInput_JustPressed(PSP_CTRL_LEFT)) {
+    g_hotbarSel = (g_hotbarSel + 8) % 9;
+  }
+  if (g_inventoryOpen) {
+    const int invCount = (int)(sizeof(g_inventoryItems) / sizeof(g_inventoryItems[0]));
+    if (PSPInput_JustPressed(PSP_CTRL_UP)) g_inventorySel = (g_inventorySel + invCount - 1) % invCount;
+    if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_inventorySel = (g_inventorySel + 1) % invCount;
+    if (PSPInput_JustPressed(PSP_CTRL_CROSS)) {
+      g_hotbar[g_hotbarSel] = g_inventoryItems[g_inventorySel];
+    }
+  }
+  g_heldBlock = g_hotbar[g_hotbarSel];
 
   // Block breaking
   bool doBreak = false;
@@ -271,7 +335,7 @@ static void game_update(float dt) {
   }
 
   // Place block
-  if (PSPInput_JustPressed(PSP_CTRL_UP) && g_hitResult.hit) {
+  if (!g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_UP) && g_hitResult.hit) {
     int px = g_hitResult.nx;
     int py = g_hitResult.ny;
     int pz = g_hitResult.nz;
@@ -333,27 +397,6 @@ static void game_update(float dt) {
     }
   }
 
-  // Cycle hotbar
-  static const uint8_t PLACEABLE[] = {
-    BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
-    BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
-    BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
-    BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK,
-    BLOCK_BOOKSHELF, BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN,
-    BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
-    BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS
-  };
-  static const int NUM_PLACEABLE = sizeof(PLACEABLE) / sizeof(PLACEABLE[0]);
-  static int placeIdx = 3; // start at cobblestone
-
-  if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) {
-    placeIdx = (placeIdx + 1) % NUM_PLACEABLE;
-    g_heldBlock = PLACEABLE[placeIdx];
-  }
-  if (PSPInput_JustPressed(PSP_CTRL_LEFT)) {
-    placeIdx = (placeIdx - 1 + NUM_PLACEABLE) % NUM_PLACEABLE;
-    g_heldBlock = PLACEABLE[placeIdx];
-  }
 }
 
 static void game_render() {
@@ -379,6 +422,15 @@ static void game_render() {
   if (g_skyRenderer) {
       clearColor = g_skyRenderer->getFogColor(_tod, lookDir);
   }
+  {
+    int wx = (int)floorf(camPos.x);
+    int wy = (int)floorf(camPos.y);
+    int wz = (int)floorf(camPos.z);
+    if (isWaterId(g_level->getBlock(wx, wy, wz))) {
+      // Underwater tint/fog approximation.
+      clearColor = 0xFF4A1C06;
+    }
+  }
 
   PSPRenderer_BeginFrame(clearColor);
 
@@ -401,6 +453,22 @@ static void game_render() {
   // TODO: HUD (hotbar, crosshair)
 
   PSPRenderer_EndFrame();
+
+  // Lightweight text HUD: hotbar + inventory selection.
+  pspDebugScreenSetXY(0, 0);
+  pspDebugScreenPrintf("Hotbar: ");
+  for (int i = 0; i < 9; ++i) {
+    if (i == g_hotbarSel) pspDebugScreenPrintf("[%d] ", g_hotbar[i]);
+    else pspDebugScreenPrintf(" %d  ", g_hotbar[i]);
+  }
+  if (g_inventoryOpen) {
+    pspDebugScreenSetXY(0, 1);
+    pspDebugScreenPrintf("Inventory ON: item=%d  (UP/DOWN select, X assign, TRIANGLE close)    ",
+                         g_inventoryItems[g_inventorySel]);
+  } else {
+    pspDebugScreenSetXY(0, 1);
+    pspDebugScreenPrintf("Inventory OFF (TRIANGLE open)                                         ");
+  }
 }
 
 // Main entry point
