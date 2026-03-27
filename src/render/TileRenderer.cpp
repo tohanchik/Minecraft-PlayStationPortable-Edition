@@ -248,6 +248,140 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     return tesselateCrossInWorld(id, lx, ly, lz, cx, cz);
   }
 
+  // Water uses a dedicated path so it behaves visually like liquid:
+  // lower top surface, transparent pass, and hidden inner faces.
+  if (id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW) {
+    const BlockUV &uv = g_blockUV[id];
+    float wx = (float)(cx * CHUNK_SIZE_X + lx);
+    float wy = (float)ly;
+    float wz = (float)(cz * CHUNK_SIZE_Z + lz);
+    int wX = cx * CHUNK_SIZE_X + lx;
+    int wY = ly;
+    int wZ = cz * CHUNK_SIZE_Z + lz;
+
+    const float ts = 1.0f / 16.0f;
+    const float eps = 0.125f / 256.0f;
+
+    auto isWaterId = [](uint8_t b) {
+      return b == BLOCK_WATER_STILL || b == BLOCK_WATER_FLOW;
+    };
+
+    // Smooth corner heights (MCPE-like): average nearby liquid levels per corner.
+    auto cornerHeight = [&](int cx0, int cz0) -> float {
+      float sum = 0.0f;
+      float wsum = 0.0f;
+      for (int ox = -1; ox <= 0; ++ox) {
+        for (int oz = -1; oz <= 0; ++oz) {
+          int sx = cx0 + ox;
+          int sz = cz0 + oz;
+          if (isWaterId(m_level->getBlock(sx, wY + 1, sz))) return 1.0f;
+          uint8_t idHere = m_level->getBlock(sx, wY, sz);
+          if (isWaterId(idHere)) {
+            uint8_t d = m_level->getWaterDepth(sx, wY, sz);
+            if (d == 0xFF || d > 7) d = (idHere == BLOCK_WATER_STILL) ? 0 : 1;
+            float h = 1.0f - ((float)d / 8.0f);
+            float w = (d == 0) ? 3.0f : 1.0f;
+            sum += h * w;
+            wsum += w;
+          } else if (!g_blockProps[idHere].isSolid()) {
+            sum += 0.0f;
+            wsum += 1.0f;
+          }
+        }
+      }
+      if (wsum <= 0.0f) return 0.0f;
+      return sum / wsum;
+    };
+
+    float h00 = cornerHeight(wX, wZ);
+    float h01 = cornerHeight(wX, wZ + 1);
+    float h11 = cornerHeight(wX + 1, wZ + 1);
+    float h10 = cornerHeight(wX + 1, wZ);
+    bool drawn = false;
+
+    bool isFancy = false;
+    // Top
+    if (needFace(lx, ly, lz, cx, cz, id, 0, 1, 0, isFancy)) {
+      float sl = getSkyLightRaw(lx, ly, lz, cx, cz, 0, 1, 0);
+      float bl = getVertexBlockLight(wX, wY + 1, wZ, 0, 0, 0, 0, 0, 0);
+      float br = (bl > sl + 0.05f) ? bl : sl;
+      uint32_t c = applyLightToFace(0xFFFFFFFF, br);
+      float u0 = uv.top_x * ts + eps, v0 = uv.top_y * ts + eps;
+      float u1 = (uv.top_x + 1) * ts - eps, v1 = (uv.top_y + 1) * ts - eps;
+      m_transTess->addQuad(u0, v0, u1, v1, c, c, c, c,
+                           wx, wy + h00, wz,
+                           wx + 1, wy + h10, wz,
+                           wx, wy + h01, wz + 1,
+                           wx + 1, wy + h11, wz + 1);
+      drawn = true;
+    }
+
+    // Bottom
+    if (needFace(lx, ly, lz, cx, cz, id, 0, -1, 0, isFancy)) {
+      float sl = getSkyLightRaw(lx, ly, lz, cx, cz, 0, -1, 0);
+      float bl = getVertexBlockLight(wX, wY - 1, wZ, 0, 0, 0, 0, 0, 0);
+      float br = (bl > sl + 0.05f) ? bl : sl;
+      uint32_t c = applyLightToFace(0xFFB0B0B0, br);
+      float u0 = uv.bot_x * ts + eps, v0 = uv.bot_y * ts + eps;
+      float u1 = (uv.bot_x + 1) * ts - eps, v1 = (uv.bot_y + 1) * ts - eps;
+      m_transTess->addQuad(u0, v0, u1, v1, c, c, c, c,
+                           wx, wy, wz + 1,
+                           wx + 1, wy, wz + 1,
+                           wx, wy, wz,
+                           wx + 1, wy, wz);
+      drawn = true;
+    }
+
+    auto addSide = [&](int dx, int dz) {
+      bool localFancy = false;
+      if (!needFace(lx, ly, lz, cx, cz, id, dx, 0, dz, localFancy)) return;
+      float sl = getSkyLightRaw(lx, ly, lz, cx, cz, dx, 0, dz);
+      float bl = getVertexBlockLight(wX + dx, wY, wZ + dz, 0, 0, 0, 0, 0, 0);
+      float br = (bl > sl + 0.05f) ? bl : sl;
+      uint32_t c = applyLightToFace(0xFFDDDDDD, br * 0.85f);
+
+      float u0 = uv.side_x * ts + eps, v0 = uv.side_y * ts + eps;
+      float u1 = (uv.side_x + 1) * ts - eps;
+      float faceH0 = h00, faceH1 = h10;
+      if (dz == 1) { faceH0 = h11; faceH1 = h01; }
+      if (dx == -1) { faceH0 = h01; faceH1 = h00; }
+      if (dx == 1) { faceH0 = h10; faceH1 = h11; }
+      float v1 = (uv.side_y + ((faceH0 + faceH1) * 0.5f)) * ts - eps;
+      if (dz == -1) {
+        m_transTess->addQuad(u0, v0, u1, v1, c, c, c, c,
+                             wx + 1, wy + h10, wz,
+                             wx, wy + h00, wz,
+                             wx + 1, wy, wz,
+                             wx, wy, wz);
+      } else if (dz == 1) {
+        m_transTess->addQuad(u0, v0, u1, v1, c, c, c, c,
+                             wx, wy + h01, wz + 1,
+                             wx + 1, wy + h11, wz + 1,
+                             wx, wy, wz + 1,
+                             wx + 1, wy, wz + 1);
+      } else if (dx == -1) {
+        m_transTess->addQuad(u0, v0, u1, v1, c, c, c, c,
+                             wx, wy + h00, wz,
+                             wx, wy + h01, wz + 1,
+                             wx, wy, wz,
+                             wx, wy, wz + 1);
+      } else {
+        m_transTess->addQuad(u0, v0, u1, v1, c, c, c, c,
+                             wx + 1, wy + h11, wz + 1,
+                             wx + 1, wy + h10, wz,
+                             wx + 1, wy, wz + 1,
+                             wx + 1, wy, wz);
+      }
+      drawn = true;
+    };
+
+    addSide(0, -1);
+    addSide(0, 1);
+    addSide(-1, 0);
+    addSide(1, 0);
+    return drawn;
+  }
+
   const BlockUV &uv = g_blockUV[id];
 
   // Vertex positions in absolute world space
