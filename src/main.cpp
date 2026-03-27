@@ -68,6 +68,146 @@ static ChunkRenderer *g_chunkRenderer = nullptr;
 static TextureAtlas *g_atlas = nullptr;
 static RayHit g_hitResult;       // Block the player is currently looking at
 static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
+static bool g_inventoryOpen = false;
+static int g_hotbarSel = 0;
+static int g_inventorySel = 0;
+static int g_inventoryScroll = 0;
+static bool g_hotbarAssignMode = false;
+static int g_pendingInventoryItem = -1;
+static uint8_t g_hotbar[9] = {
+  BLOCK_COBBLESTONE, BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD_PLANK, BLOCK_GLASS,
+  BLOCK_SAND, BLOCK_LOG, BLOCK_LEAVES, BLOCK_WATER_STILL
+};
+static const uint8_t g_inventoryItems[] = {
+  BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
+  BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
+  BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
+  BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK, BLOCK_BOOKSHELF,
+  BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN, BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
+  BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_WATER_STILL
+};
+
+struct HudColVert {
+  uint32_t color;
+  float x, y, z;
+};
+
+struct HudTexVert {
+  float u, v;
+  float x, y, z;
+};
+
+static inline void hudDrawRect(float x, float y, float w, float h, uint32_t abgr) {
+  sceGuDisable(GU_TEXTURE_2D);
+  HudColVert *v = (HudColVert *)sceGuGetMemory(2 * sizeof(HudColVert));
+  v[0].color = abgr; v[0].x = x;     v[0].y = y;     v[0].z = 0.0f;
+  v[1].color = abgr; v[1].x = x + w; v[1].y = y + h; v[1].z = 0.0f;
+  sceGuDrawArray(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
+  sceGuEnable(GU_TEXTURE_2D);
+}
+
+static inline void hudDrawTile(TextureAtlas *atlas, int tx, int ty, float x, float y, float size) {
+  if (!atlas) return;
+  atlas->bind();
+  // Force neutral vertex color so HUD icons are not tinted by previous draws.
+  sceGuColor(0xFFFFFFFF);
+  sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+  sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+  HudTexVert *v = (HudTexVert *)sceGuGetMemory(2 * sizeof(HudTexVert));
+  // 2D sprite path on PSP expects texel-space UVs.
+  float u0 = (float)(tx * 16) + 0.5f;
+  float v0 = (float)(ty * 16) + 0.5f;
+  float us = 15.0f;
+  float vs = 15.0f;
+  v[0].u = u0;      v[0].v = v0;      v[0].x = x;        v[0].y = y;        v[0].z = 0.0f;
+  v[1].u = u0 + us; v[1].v = v0 + vs; v[1].x = x + size; v[1].y = y + size; v[1].z = 0.0f;
+  sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
+}
+
+static inline void hudGetIconTile(uint8_t id, int &tx, int &ty) {
+  tx = g_blockUV[id].top_x;
+  ty = g_blockUV[id].top_y;
+  if (tx == 0 && ty == 0 && id != BLOCK_GRASS) {
+    tx = g_blockUV[id].side_x;
+    ty = g_blockUV[id].side_y;
+    if (tx == 0 && ty == 0) {
+      tx = 1; // stone fallback
+      ty = 0;
+    }
+  }
+}
+
+static void drawHotbarHUD() {
+  const float slot = 24.0f;
+  const float pad = 3.0f;
+  const float totalW = 9 * slot + 8 * pad;
+  const float startX = (480.0f - totalW) * 0.5f;
+  const float y = 272.0f - slot - 8.0f;
+
+  for (int i = 0; i < 9; ++i) {
+    float sx = startX + i * (slot + pad);
+    bool selected = (i == g_hotbarSel && (!g_inventoryOpen || g_hotbarAssignMode));
+    hudDrawRect(sx - 1, y - 1, slot + 2, slot + 2, selected ? 0xD0FFFFFF : 0x90303030);
+    hudDrawRect(sx, y, slot, slot, 0x90000000);
+    uint8_t id = g_hotbar[i];
+    int tx, ty;
+    hudGetIconTile(id, tx, ty);
+    hudDrawTile(g_atlas, tx, ty, sx + 3, y + 3, slot - 6);
+  }
+
+  if (g_inventoryOpen) {
+    const int invCount = (int)(sizeof(g_inventoryItems) / sizeof(g_inventoryItems[0]));
+    const int cols = 6;
+    const int rows = 4;
+    const float cell = 30.0f;
+    const float panelW = cols * cell + 10.0f;
+    const float panelH = rows * cell + 10.0f;
+    float panelX = (480.0f - panelW) * 0.5f;
+    float panelY = (272.0f - panelH) * 0.30f;
+    hudDrawRect(panelX - 3, panelY - 3, panelW + 6, panelH + 6, 0xC0303030);
+    hudDrawRect(panelX, panelY, panelW, panelH, 0x70000000);
+
+    int start = g_inventoryScroll * cols;
+    for (int r = 0; r < rows; ++r) {
+      for (int c = 0; c < cols; ++c) {
+        int idx = start + r * cols + c;
+        float sx = panelX + 5 + c * cell;
+        float sy = panelY + 5 + r * cell;
+        hudDrawRect(sx, sy, cell - 3, cell - 3, 0x90303030);
+        if (idx >= invCount) continue;
+        bool selected = (idx == g_inventorySel && !g_hotbarAssignMode);
+        if (selected) hudDrawRect(sx - 1, sy - 1, cell - 1, cell - 1, 0xD0FFFFFF);
+        uint8_t id = g_inventoryItems[idx];
+        int tx, ty;
+        hudGetIconTile(id, tx, ty);
+        hudDrawTile(g_atlas, tx, ty, sx + 3, sy + 3, cell - 9);
+      }
+    }
+
+    if (g_pendingInventoryItem >= 0) {
+      float px = panelX + panelW * 0.5f - 14.0f;
+      float py = panelY - 22.0f;
+      hudDrawRect(px - 2, py - 2, 28, 28, 0xD0FFFFFF);
+      uint8_t id = g_inventoryItems[g_pendingInventoryItem];
+      int tx, ty;
+      hudGetIconTile(id, tx, ty);
+      hudDrawTile(g_atlas, tx, ty, px, py, 24);
+    }
+
+    // Scroll indicator
+    int maxScroll = (invCount + cols - 1) / cols - rows;
+    if (maxScroll < 0) maxScroll = 0;
+    if (maxScroll > 0) {
+      float t = (float)g_inventoryScroll / (float)maxScroll;
+      hudDrawRect(panelX + panelW + 6, panelY, 4, panelH, 0x70303030);
+      hudDrawRect(panelX + panelW + 6, panelY + t * (panelH - 32), 4, 32, 0xD0FFFFFF);
+    }
+  }
+}
+
+static inline bool isWaterId(uint8_t id) {
+  return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
+}
 
 // Initialization
 static bool game_init() {
@@ -111,7 +251,7 @@ static bool game_init() {
   g_player.onGround = false;
   g_player.isFlying = false;
   g_player.jumpDoubleTapTimer = 0.0f;
-
+  g_heldBlock = g_hotbar[g_hotbarSel];
   return true;
 }
 
@@ -119,18 +259,31 @@ static bool game_init() {
 static void game_update(float dt) {
   PSPInput_Update();
   if (g_level) {
+    g_level->setSimulationFocus((int)floorf(g_player.x), (int)floorf(g_player.z), 48);
     g_level->tick();
   }
 
-  float moveSpeed = (g_player.isFlying ? 10.0f : 5.0f) * dt;
+  bool inWater = false;
+  {
+    int fx = (int)floorf(g_player.x);
+    int fz = (int)floorf(g_player.z);
+    int bodyY = (int)floorf(g_player.y + 0.1f);
+    inWater = isWaterId(g_level->getBlock(fx, bodyY, fz));
+  }
+
+  float baseMoveSpeed = g_player.isFlying ? 10.0f : 5.0f;
+  if (inWater && !g_player.isFlying) baseMoveSpeed *= 0.45f;
+  float moveSpeed = baseMoveSpeed * dt;
   float lookSpeed = 120.0f * dt;
 
   // Rotation with right stick (Face Buttons)
-  float lx = PSPInput_StickX(1);
-  float ly = PSPInput_StickY(1);
-  g_player.yaw += lx * lookSpeed;
-  g_player.pitch += ly * lookSpeed;
-  g_player.pitch = Mth::clamp(g_player.pitch, -89.0f, 89.0f);
+  if (!g_inventoryOpen) {
+    float lx = PSPInput_StickX(1);
+    float ly = PSPInput_StickY(1);
+    g_player.yaw += lx * lookSpeed;
+    g_player.pitch += ly * lookSpeed;
+    g_player.pitch = Mth::clamp(g_player.pitch, -89.0f, 89.0f);
+  }
 
   // Movement with left stick (Analog)
   float fx = -PSPInput_StickX(0);
@@ -154,7 +307,15 @@ static void game_update(float dt) {
       dy = -flySpeed;  // Descend
     g_player.velY = 0.0f;
   } else {
-    g_player.velY -= 20.0f * dt;
+    if (inWater) {
+      g_player.velY -= 6.0f * dt;
+      if (PSPInput_IsHeld(PSP_CTRL_SELECT)) {
+        g_player.velY += 9.0f * dt;
+      }
+      g_player.velY *= 0.85f;
+    } else {
+      g_player.velY -= 20.0f * dt;
+    }
     dy = g_player.velY * dt;
   }
 
@@ -179,6 +340,9 @@ static void game_update(float dt) {
   g_player.onGround = (dy_org != dy && dy_org < 0.0f);
   if (g_player.onGround || dy_org != dy) {
     g_player.velY = 0.0f;
+  }
+  if (inWater && !g_player.isFlying) {
+    g_player.velY *= 0.8f;
   }
 
   g_player.x = (player_aabb.x0 + player_aabb.x1) / 2.0f;
@@ -207,6 +371,8 @@ static void game_update(float dt) {
       if (!g_player.isFlying && g_player.onGround) {
         g_player.velY = 6.5f;
         g_player.onGround = false;
+      } else if (!g_player.isFlying && inWater) {
+        g_player.velY = 2.5f;
       }
       g_player.jumpDoubleTapTimer = DOUBLE_TAP_WINDOW;
     }
@@ -227,6 +393,57 @@ static void game_update(float dt) {
   // Block action cooldown
   static float breakCooldown = 0.0f;
   if (breakCooldown > 0.0f) breakCooldown -= dt;
+
+  // Inventory/hotbar controls
+  if ((PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && PSPInput_JustPressed(PSP_CTRL_RTRIGGER)) ||
+      (PSPInput_IsHeld(PSP_CTRL_RTRIGGER) && PSPInput_JustPressed(PSP_CTRL_LTRIGGER))) {
+    g_inventoryOpen = true;
+    g_hotbarAssignMode = false;
+    g_pendingInventoryItem = -1;
+  }
+  if (g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_CIRCLE)) {
+    g_inventoryOpen = false;
+    g_hotbarAssignMode = false;
+    g_pendingInventoryItem = -1;
+  }
+  if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) {
+    if (g_hotbarAssignMode || !g_inventoryOpen) g_hotbarSel = (g_hotbarSel + 1) % 9;
+    else {
+      int invCount = (int)(sizeof(g_inventoryItems) / sizeof(g_inventoryItems[0]));
+      g_inventorySel = (g_inventorySel + 1) % invCount;
+    }
+  }
+  if (PSPInput_JustPressed(PSP_CTRL_LEFT)) {
+    if (g_hotbarAssignMode || !g_inventoryOpen) g_hotbarSel = (g_hotbarSel + 8) % 9;
+    else {
+      int invCount = (int)(sizeof(g_inventoryItems) / sizeof(g_inventoryItems[0]));
+      g_inventorySel = (g_inventorySel + invCount - 1) % invCount;
+    }
+  }
+  if (g_inventoryOpen) {
+    const int invCount = (int)(sizeof(g_inventoryItems) / sizeof(g_inventoryItems[0]));
+    const int cols = 6;
+    const int rows = 4;
+    const int maxScroll = ((invCount + cols - 1) / cols > rows) ? ((invCount + cols - 1) / cols - rows) : 0;
+    if (PSPInput_IsHeld(PSP_CTRL_TRIANGLE)) {
+      if (PSPInput_JustPressed(PSP_CTRL_UP) && g_inventoryScroll > 0) g_inventoryScroll--;
+      if (PSPInput_JustPressed(PSP_CTRL_DOWN) && g_inventoryScroll < maxScroll) g_inventoryScroll++;
+    } else if (!g_hotbarAssignMode) {
+      if (PSPInput_JustPressed(PSP_CTRL_UP)) g_inventorySel = (g_inventorySel - cols + invCount) % invCount;
+      if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_inventorySel = (g_inventorySel + cols) % invCount;
+    }
+    if (PSPInput_JustPressed(PSP_CTRL_CROSS)) {
+      if (!g_hotbarAssignMode) {
+        g_pendingInventoryItem = g_inventorySel;
+        g_hotbarAssignMode = true;
+      } else if (g_pendingInventoryItem >= 0) {
+        g_hotbar[g_hotbarSel] = g_inventoryItems[g_pendingInventoryItem];
+        g_hotbarAssignMode = false;
+        g_pendingInventoryItem = -1;
+      }
+    }
+  }
+  g_heldBlock = g_hotbar[g_hotbarSel];
 
   // Block breaking
   bool doBreak = false;
@@ -271,7 +488,7 @@ static void game_update(float dt) {
   }
 
   // Place block
-  if (PSPInput_JustPressed(PSP_CTRL_UP) && g_hitResult.hit) {
+  if (!g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_UP) && g_hitResult.hit) {
     int px = g_hitResult.nx;
     int py = g_hitResult.ny;
     int pz = g_hitResult.nz;
@@ -333,27 +550,6 @@ static void game_update(float dt) {
     }
   }
 
-  // Cycle hotbar
-  static const uint8_t PLACEABLE[] = {
-    BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
-    BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
-    BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
-    BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK,
-    BLOCK_BOOKSHELF, BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN,
-    BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
-    BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS
-  };
-  static const int NUM_PLACEABLE = sizeof(PLACEABLE) / sizeof(PLACEABLE[0]);
-  static int placeIdx = 3; // start at cobblestone
-
-  if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) {
-    placeIdx = (placeIdx + 1) % NUM_PLACEABLE;
-    g_heldBlock = PLACEABLE[placeIdx];
-  }
-  if (PSPInput_JustPressed(PSP_CTRL_LEFT)) {
-    placeIdx = (placeIdx - 1 + NUM_PLACEABLE) % NUM_PLACEABLE;
-    g_heldBlock = PLACEABLE[placeIdx];
-  }
 }
 
 static void game_render() {
@@ -379,6 +575,15 @@ static void game_render() {
   if (g_skyRenderer) {
       clearColor = g_skyRenderer->getFogColor(_tod, lookDir);
   }
+  {
+    int wx = (int)floorf(camPos.x);
+    int wy = (int)floorf(camPos.y);
+    int wz = (int)floorf(camPos.z);
+    if (isWaterId(g_level->getBlock(wx, wy, wz))) {
+      // Underwater tint/fog approximation.
+      clearColor = 0xFF4A1C06;
+    }
+  }
 
   PSPRenderer_BeginFrame(clearColor);
 
@@ -398,7 +603,15 @@ static void game_render() {
   if (g_cloudRenderer)
     g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, 0.0f);
 
-  // TODO: HUD (hotbar, crosshair)
+  // 2D HUD pass
+  sceGuDisable(GU_DEPTH_TEST);
+  sceGuDisable(GU_CULL_FACE);
+  sceGuEnable(GU_BLEND);
+  sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+  drawHotbarHUD();
+  sceGuDisable(GU_BLEND);
+  sceGuEnable(GU_CULL_FACE);
+  sceGuEnable(GU_DEPTH_TEST);
 
   PSPRenderer_EndFrame();
 }
