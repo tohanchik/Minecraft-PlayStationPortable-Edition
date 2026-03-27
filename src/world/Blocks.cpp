@@ -148,9 +148,10 @@ void Blocks_Init() {
   DEF_UV(BLOCK_TALLGRASS, 7, 2, 7, 2, 7, 2);    // tallgrass col=7, row=2
   DEF_UV(BLOCK_FLOWER, 13, 0, 13, 0, 13, 0); // dandelion col=13, row=0
   DEF_UV(BLOCK_ROSE, 12, 0, 12, 0, 12, 0);    // rose col=12, row=0
-  // Water - classic Minecraft terrain.png: water_still = col13,row12; water_flow = col13,row13
-  DEF_UV(BLOCK_WATER_STILL, 13, 12, 13, 12, 13, 12);
-  DEF_UV(BLOCK_WATER_FLOW, 13, 13, 13, 13, 13, 13);
+  // Water - use PE/MCPE-compatible water tiles:
+  // still = col13,row12 ; flowing/side = col14,row12
+  DEF_UV(BLOCK_WATER_STILL, 13, 12, 14, 12, 14, 12);
+  DEF_UV(BLOCK_WATER_FLOW, 14, 12, 14, 12, 14, 12);
   // Lava - lava_still = col15,row13; lava_flow = col15,row14
   DEF_UV(BLOCK_LAVA_STILL, 15, 13, 15, 13, 15, 13);
   DEF_UV(BLOCK_LAVA_FLOW, 15, 14, 15, 14, 15, 14);
