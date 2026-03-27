@@ -3,14 +3,214 @@
 #include "WorldGen.h"
 #include "TreeFeature.h"
 #include <vector>
+#include <functional>
 #include <string.h>
 
 struct LightNode {
   int x, y, z;
 };
 
+bool Level::isWaterBlock(uint8_t id) const {
+  return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
+}
+
+void Level::setSimulationFocus(int wx, int wz, int radius) {
+  m_simFocusX = wx;
+  m_simFocusZ = wz;
+  m_simFocusRadius = radius;
+}
+
+void Level::tick() {
+  m_time += 1;
+
+  // MCPE-like liquid logic is expensive; run every few world ticks.
+  if (++m_waterTickAccum >= 6) {
+    m_waterTickAccum = 0;
+    tickWater();
+  }
+}
+
+void Level::tickWater() {
+  // NOTE: This is intentionally metadata-lite MCPE-style water simulation.
+  // It tracks a per-block depth value (0..7) to drive both behavior and render heights.
+  struct WaterOp {
+    int x, y, z;
+    uint8_t id;
+    uint8_t depth;
+  };
+  std::vector<WaterOp> ops;
+  ops.reserve(8192);
+
+  const int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  const int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  int simMinX = 0;
+  int simMaxX = maxX - 1;
+  int simMinZ = 0;
+  int simMaxZ = maxZ - 1;
+  if (m_simFocusX >= 0 && m_simFocusZ >= 0 && m_simFocusRadius > 0) {
+    simMinX = m_simFocusX - m_simFocusRadius;
+    simMaxX = m_simFocusX + m_simFocusRadius;
+    simMinZ = m_simFocusZ - m_simFocusRadius;
+    simMaxZ = m_simFocusZ + m_simFocusRadius;
+    if (simMinX < 0) simMinX = 0;
+    if (simMinZ < 0) simMinZ = 0;
+    if (simMaxX >= maxX) simMaxX = maxX - 1;
+    if (simMaxZ >= maxZ) simMaxZ = maxZ - 1;
+  }
+
+  auto inBounds = [&](int x, int y, int z) {
+    return x >= 0 && x < maxX && z >= 0 && z < maxZ && y >= 0 && y < CHUNK_SIZE_Y;
+  };
+
+  auto queueSet = [&](int x, int y, int z, uint8_t id, uint8_t depth) {
+    if (!inBounds(x, y, z)) return;
+    uint8_t cur = getBlock(x, y, z);
+    uint8_t curDepth = getWaterDepth(x, y, z);
+    if (cur == id && curDepth == depth) return;
+    ops.push_back({x, y, z, id, depth});
+  };
+
+  auto canFlowInto = [&](int x, int y, int z) {
+    if (!inBounds(x, y, z)) return false;
+    uint8_t t = getBlock(x, y, z);
+    if (t == BLOCK_AIR) return true;
+    if (isWaterBlock(t)) return true;
+    return !g_blockProps[t].isSolid();
+  };
+
+  auto hasDownwardExit = [&](int x, int y, int z) {
+    int by = y - 1;
+    return by >= 0 && canFlowInto(x, by, z);
+  };
+
+  static const int flowDx[4] = {-1, 1, 0, 0};
+  static const int flowDz[4] = {0, 0, -1, 1};
+  static const int oppositeDir[4] = {1, 0, 3, 2};
+  const int maxFlowSearch = 3;
+
+  std::function<int(int, int, int, int, int)> flowCost =
+      [&](int x, int y, int z, int dist, int fromDir) -> int {
+    if (dist >= maxFlowSearch) return 999;
+    if (hasDownwardExit(x, y, z)) return dist;
+
+    int best = 999;
+    for (int i = 0; i < 4; ++i) {
+      if (fromDir >= 0 && i == oppositeDir[fromDir]) continue;
+      int nx = x + flowDx[i], nz = z + flowDz[i];
+      if (!inBounds(nx, y, nz)) continue;
+      if (!canFlowInto(nx, y, nz)) continue;
+      int c = flowCost(nx, y, nz, dist + 1, i);
+      if (c < best) best = c;
+    }
+    return best;
+  };
+
+  for (int y = CHUNK_SIZE_Y - 1; y >= 0; --y) {
+    for (int z = simMinZ; z <= simMaxZ; ++z) {
+      for (int x = simMinX; x <= simMaxX; ++x) {
+        uint8_t id = getBlock(x, y, z);
+        if (!isWaterBlock(id)) continue;
+        uint8_t curDepth = getWaterDepth(x, y, z);
+        if (curDepth == 0xFF) curDepth = (id == BLOCK_WATER_STILL) ? 0 : 1;
+
+        if (id == BLOCK_WATER_STILL) curDepth = 0;
+
+        // Prefer downward flow.
+        int by = y - 1;
+        bool flowedDown = false;
+        if (by >= 0 && canFlowInto(x, by, z)) {
+          queueSet(x, by, z, BLOCK_WATER_FLOW, 1);
+          flowedDown = true;
+        }
+
+        // Horizontal spread and depth propagation.
+        uint8_t neighborMin = 7;
+        bool hasWaterNeighbor = false;
+        int sourceNeighbors = 0;
+        bool hasWaterAbove = isWaterBlock(getBlock(x, y + 1, z));
+        for (int i = 0; i < 4; ++i) {
+          int nx = x + flowDx[i], nz = z + flowDz[i];
+          if (!inBounds(nx, y, nz)) continue;
+          uint8_t nId = getBlock(nx, y, nz);
+          if (isWaterBlock(nId)) {
+            hasWaterNeighbor = true;
+            uint8_t nd = getWaterDepth(nx, y, nz);
+            if (nd == 0xFF) nd = (nId == BLOCK_WATER_STILL) ? 0 : 1;
+            if (nd == 0) sourceNeighbors++;
+            if (nd != 0xFF && nd < neighborMin) neighborMin = nd;
+          }
+        }
+        uint8_t belowId = getBlock(x, y - 1, z);
+        bool supportBelow = (y == 0) || g_blockProps[belowId].isSolid() || isWaterBlock(belowId);
+
+        uint8_t nextDepth = curDepth;
+        if (id == BLOCK_WATER_STILL) {
+          nextDepth = 0;
+        } else {
+          if (hasWaterAbove) nextDepth = 1;
+          else if (sourceNeighbors >= 2 && supportBelow) nextDepth = 0;
+          else if (neighborMin < 7) nextDepth = (uint8_t)(neighborMin + 1);
+          else nextDepth = 8;
+        }
+
+        if (nextDepth <= 7) {
+          uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
+          if (spreadDepth <= 7 && !flowedDown) {
+            int costs[4] = {999, 999, 999, 999};
+            int bestCost = 999;
+            bool canSpread[4] = {false, false, false, false};
+            for (int i = 0; i < 4; ++i) {
+              int nx = x + flowDx[i], nz = z + flowDz[i];
+              if (!inBounds(nx, y, nz)) continue;
+              if (!canFlowInto(nx, y, nz)) continue;
+              canSpread[i] = true;
+              costs[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCost(nx, y, nz, 1, i);
+              if (costs[i] < bestCost) bestCost = costs[i];
+            }
+            for (int i = 0; i < 4; ++i) {
+              if (!canSpread[i]) continue;
+              if (bestCost != 999 && costs[i] != bestCost) continue;
+              int nx = x + flowDx[i], nz = z + flowDz[i];
+              uint8_t nId = getBlock(nx, y, nz);
+              uint8_t nDepth = getWaterDepth(nx, y, nz);
+              if (!isWaterBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
+                queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
+              }
+            }
+          }
+          if (id == BLOCK_WATER_FLOW) {
+            if (nextDepth >= 8 || (!hasWaterAbove && !hasWaterNeighbor && !flowedDown)) {
+              queueSet(x, y, z, BLOCK_AIR, 0xFF);
+            } else {
+              queueSet(x, y, z, (nextDepth == 0) ? BLOCK_WATER_STILL : BLOCK_WATER_FLOW, nextDepth);
+            }
+          } else {
+            queueSet(x, y, z, BLOCK_WATER_STILL, 0);
+          }
+        } else {
+          queueSet(x, y, z, BLOCK_AIR, 0xFF);
+        }
+      }
+    }
+  }
+
+  for (const auto &op : ops) {
+    int cx = op.x >> 4;
+    int cz = op.z >> 4;
+    if (cx < 0 || cx >= WORLD_CHUNKS_X || cz < 0 || cz >= WORLD_CHUNKS_Z || op.y < 0 || op.y >= CHUNK_SIZE_Y) continue;
+    uint8_t cur = m_chunks[cx][cz]->getBlock(op.x & 0xF, op.y, op.z & 0xF);
+    if (cur != op.id) {
+      m_chunks[cx][cz]->setBlock(op.x & 0xF, op.y, op.z & 0xF, op.id);
+      updateLight(op.x, op.y, op.z);
+      markDirty(op.x, op.y, op.z);
+    }
+    setWaterDepth(op.x, op.y, op.z, op.depth);
+  }
+}
+
 Level::Level() {
   memset(m_chunks, 0, sizeof(m_chunks));
+  m_waterDepth.resize(WORLD_CHUNKS_X * CHUNK_SIZE_X * CHUNK_SIZE_Y * WORLD_CHUNKS_Z * CHUNK_SIZE_Z, 0xFF);
   for (int cx = 0; cx < WORLD_CHUNKS_X; cx++)
     for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++)
       m_chunks[cx][cz] = new Chunk();
@@ -55,6 +255,24 @@ uint8_t Level::getBlock(int wx, int wy, int wz) const {
   return m_chunks[cx][cz]->getBlock(wx & 0xF, wy, wz & 0xF);
 }
 
+int Level::waterIndex(int wx, int wy, int wz) const {
+  return ((wy * (WORLD_CHUNKS_Z * CHUNK_SIZE_Z) + wz) * (WORLD_CHUNKS_X * CHUNK_SIZE_X) + wx);
+}
+
+uint8_t Level::getWaterDepth(int wx, int wy, int wz) const {
+  int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  if (wx < 0 || wx >= maxX || wz < 0 || wz >= maxZ || wy < 0 || wy >= CHUNK_SIZE_Y) return 0xFF;
+  return m_waterDepth[waterIndex(wx, wy, wz)];
+}
+
+void Level::setWaterDepth(int wx, int wy, int wz, uint8_t depth) {
+  int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  if (wx < 0 || wx >= maxX || wz < 0 || wz >= maxZ || wy < 0 || wy >= CHUNK_SIZE_Y) return;
+  m_waterDepth[waterIndex(wx, wy, wz)] = depth;
+}
+
 void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
   int cx = wx >> 4;
   int cz = wz >> 4;
@@ -63,6 +281,30 @@ void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
   if (oldId == id) return;
   
   m_chunks[cx][cz]->setBlock(wx & 0xF, wy, wz & 0xF, id);
+  if (isWaterBlock(id)) {
+    setWaterDepth(wx, wy, wz, (id == BLOCK_WATER_STILL) ? 0 : 1);
+  } else {
+    setWaterDepth(wx, wy, wz, 0xFF);
+  }
+
+  // Wake nearby static water when terrain changes so generated lakes/oceans
+  // immediately react to newly opened space.
+  static const int dx[6] = {-1, 1, 0, 0, 0, 0};
+  static const int dy[6] = {0, 0, -1, 1, 0, 0};
+  static const int dz[6] = {0, 0, 0, 0, -1, 1};
+  for (int i = 0; i < 6; ++i) {
+    int nx = wx + dx[i], ny = wy + dy[i], nz = wz + dz[i];
+    if (ny < 0 || ny >= CHUNK_SIZE_Y) continue;
+    if (getBlock(nx, ny, nz) == BLOCK_WATER_STILL) {
+      int ncx = nx >> 4, ncz = nz >> 4;
+      if (ncx >= 0 && ncx < WORLD_CHUNKS_X && ncz >= 0 && ncz < WORLD_CHUNKS_Z) {
+        m_chunks[ncx][ncz]->setBlock(nx & 0xF, ny, nz & 0xF, BLOCK_WATER_FLOW);
+        setWaterDepth(nx, ny, nz, 1);
+        updateLight(nx, ny, nz);
+        markDirty(nx, ny, nz);
+      }
+    }
+  }
   updateLight(wx, wy, wz);
 }
 
@@ -156,6 +398,17 @@ void Level::generate(Random *rng) {
           setBlock(wx, wy, wz, BLOCK_DIRT);
           TreeFeature::place(this, wx, wy + 1, wz, chunkRng);
         }
+      }
+    }
+  }
+
+  for (int y = 0; y < CHUNK_SIZE_Y; ++y) {
+    for (int z = 0; z < WORLD_CHUNKS_Z * CHUNK_SIZE_Z; ++z) {
+      for (int x = 0; x < WORLD_CHUNKS_X * CHUNK_SIZE_X; ++x) {
+        uint8_t id = getBlock(x, y, z);
+        if (id == BLOCK_WATER_STILL) setWaterDepth(x, y, z, 0);
+        else if (id == BLOCK_WATER_FLOW) setWaterDepth(x, y, z, 1);
+        else setWaterDepth(x, y, z, 0xFF);
       }
     }
   }
