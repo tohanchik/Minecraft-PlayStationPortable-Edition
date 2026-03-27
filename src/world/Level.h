@@ -26,6 +26,8 @@ public:
 
   uint8_t getBlock(int wx, int wy, int wz) const;
   void setBlock(int wx, int wy, int wz, uint8_t id);
+  uint8_t getWaterDepth(int wx, int wy, int wz) const;
+  void setWaterDepth(int wx, int wy, int wz, uint8_t depth);
 
   uint8_t getSkyLight(int wx, int wy, int wz) const;
   uint8_t getBlockLight(int wx, int wy, int wz) const;
@@ -64,13 +66,20 @@ public:
 
   long long getTime() const { return m_time; }
 
-  void tick() {
-    // Advance time
-    m_time += 1;
-  }
+  void tick();
+  void setSimulationFocus(int wx, int wz, int radius);
 
 private:
+  void tickWater();
+  bool isWaterBlock(uint8_t id) const;
+  int waterIndex(int wx, int wy, int wz) const;
+
   Chunk *m_chunks[WORLD_CHUNKS_X][WORLD_CHUNKS_Z];
+  std::vector<uint8_t> m_waterDepth;
   long long m_time = 6000LL;
   float m_lastSunBrightness = 1.0f;
+  int m_waterTickAccum = 0;
+  int m_simFocusX = -1;
+  int m_simFocusZ = -1;
+  int m_simFocusRadius = 48;
 };
