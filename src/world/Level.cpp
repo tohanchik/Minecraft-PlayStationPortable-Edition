@@ -22,7 +22,11 @@ void Level::setSimulationFocus(int wx, int wy, int wz, int radius) {
 }
 
 void Level::tick() {
-  m_time += 1;
+  // Slow down day/night and cloud motion: advance world time every 3 ticks.
+  if (++m_timeTickAccum >= 3) {
+    m_time += 1;
+    m_timeTickAccum = 0;
+  }
   if (!m_waterDirty) return;
 
   // MCPE-like liquid logic is expensive; run every few world ticks.
