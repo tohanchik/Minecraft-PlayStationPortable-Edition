@@ -22,17 +22,27 @@ jobs:
           which psp-config
           psp-config --pspsdk-path
 
-      - name: Build
-        run: make -j"$(nproc)"
+      - name: Clean
+        run: make clean
 
-      - name: Check output
+      - name: Build fresh EBOOT
+        run: make EBOOT.PBP -j"$(nproc)"
+
+      - name: Package
+        run: make package
+
+      - name: Check outputs
         run: |
           test -f EBOOT.PBP
-          ls -lh EBOOT.PBP
+          test -f MinecraftPSP-package.zip
+          test -f BUILD_INFO.txt
+          ls -lh EBOOT.PBP MinecraftPSP-package.zip BUILD_INFO.txt
 
-      - name: Upload EBOOT artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: EBOOT.PBP
-          path: EBOOT.PBP
+          name: psp-build-artifacts
+          path: |
+            EBOOT.PBP
+            MinecraftPSP-package.zip
           if-no-files-found: error
