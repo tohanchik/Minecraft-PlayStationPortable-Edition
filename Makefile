@@ -31,6 +31,7 @@ SRCS = src/main.cpp \
        src/render/SkyRenderer.cpp \
        src/render/CloudRenderer.cpp \
        src/render/BlockHighlight.cpp \
+       src/render/PigMob.cpp \
        src/math/Frustum.cpp \
        src/input/PSPInput.cpp
 
