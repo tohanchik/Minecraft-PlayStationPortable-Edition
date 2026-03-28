@@ -13,6 +13,8 @@
 #include "render/BlockHighlight.h"
 #include "render/ChunkRenderer.h"
 #include "render/CloudRenderer.h"
+#include "entity/Pig.h"
+#include "render/PigRenderer.h"
 #include "world/Level.h"
 #include "world/AABB.h"
 #include "render/PSPRenderer.h"
@@ -67,6 +69,7 @@ static CloudRenderer *g_cloudRenderer = nullptr;
 static ChunkRenderer *g_chunkRenderer = nullptr;
 static TextureAtlas *g_atlas = nullptr;
 static RayHit g_hitResult;       // Block the player is currently looking at
+static Pig g_pig;
 static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
 static bool g_inventoryOpen = false;
 static int g_hotbarSel = 0;
@@ -84,7 +87,7 @@ static const uint8_t g_inventoryItems[] = {
   BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
   BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK, BLOCK_BOOKSHELF,
   BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN, BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
-  BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_WATER_STILL
+  BLOCK_PIG, BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_WATER_STILL
 };
 
 struct HudColVert {
@@ -252,6 +255,10 @@ static bool game_init() {
   g_player.isFlying = false;
   g_player.jumpDoubleTapTimer = 0.0f;
   g_heldBlock = g_hotbar[g_hotbarSel];
+
+  Pig_Init(g_pig, g_level, g_player.x, g_player.y, g_player.z, g_player.yaw);
+  PigRenderer_Init();
+
   return true;
 }
 
@@ -445,6 +452,8 @@ static void game_update(float dt) {
   }
   g_heldBlock = g_hotbar[g_hotbarSel];
 
+  Pig_Update(g_pig, g_level, dt, g_player.x, g_player.y, g_player.z, g_player.yaw);
+
   // Block breaking
   bool doBreak = false;
   if (PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && breakCooldown <= 0.0f) {
@@ -566,6 +575,8 @@ static void game_render() {
   if (g_cloudRenderer)
     g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, 0.0f);
 
+  PigRenderer_Render(g_pig);
+
   // 2D HUD pass
   sceGuDisable(GU_DEPTH_TEST);
   sceGuDisable(GU_CULL_FACE);
@@ -592,7 +603,8 @@ int main(int argc, char *argv[]) {
 
   uint64_t lastTime = sceKernelGetSystemTimeWide();
 
-  while (true) {
+  bool running = true;
+  while (running) {
     uint64_t now = sceKernelGetSystemTimeWide();
     float dt = (float)(now - lastTime) / 1000000.0f; // microseconds -> seconds
     if (dt > 0.05f)
@@ -601,7 +613,19 @@ int main(int argc, char *argv[]) {
 
     game_update(dt);
     game_render();
+
+    if (PSPInput_JustPressed(PSP_CTRL_START)) {
+      running = false;
+    }
   }
+
+  PigRenderer_Shutdown();
+  delete g_chunkRenderer; g_chunkRenderer = nullptr;
+  delete g_cloudRenderer; g_cloudRenderer = nullptr;
+  delete g_skyRenderer; g_skyRenderer = nullptr;
+  delete g_level; g_level = nullptr;
+  delete g_atlas; g_atlas = nullptr;
+  PSPRenderer_Shutdown();
 
   return 0;
 }
