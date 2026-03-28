@@ -3,6 +3,7 @@
 # Compilator: psp-gcc via PSPSDK
 
 TARGET = MinecraftPSP
+.DEFAULT_GOAL := EBOOT.PBP
 PSPSDK = $(shell psp-config --pspsdk-path)
 
 # Metadata EBOOT
@@ -30,6 +31,7 @@ SRCS = src/main.cpp \
        src/render/TileRenderer.cpp \
        src/render/SkyRenderer.cpp \
        src/render/CloudRenderer.cpp \
+       src/render/PigMob.cpp \
        src/render/BlockHighlight.cpp \
        src/math/Frustum.cpp \
        src/input/PSPInput.cpp
@@ -60,3 +62,15 @@ LIBS = -lstdc++ \
 # Build
 include $(PSPSDK)/lib/build.mak
 
+
+
+PACKAGE_ZIP = $(TARGET)-package.zip
+BUILD_INFO_FILE = BUILD_INFO.txt
+
+package: EBOOT.PBP
+	@echo "commit: $$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" > $(BUILD_INFO_FILE)
+	@echo "time_utc: $$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $(BUILD_INFO_FILE)
+	@rm -f $(PACKAGE_ZIP)
+	@python3 -c "import os,zipfile; z=zipfile.ZipFile('$(PACKAGE_ZIP)','w',zipfile.ZIP_DEFLATED); z.write('EBOOT.PBP','EBOOT.PBP'); z.write('$(BUILD_INFO_FILE)','$(BUILD_INFO_FILE)'); [z.write(os.path.join(r,f), os.path.join(r,f)) for r,_,fs in os.walk('res') for f in fs]; z.close()"
+
+.PHONY: package
