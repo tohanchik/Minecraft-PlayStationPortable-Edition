@@ -107,141 +107,173 @@ void Level::tickWater() {
 
   auto hasDownwardExit = [&](int x, int y, int z) {
     int by = y - 1;
-    return by >= 0 && canFlowInto(x, by, z);
+    if (by < 0) return false;
+    uint8_t bId = getBlock(x, by, z);
+    if (!isWaterBlock(bId)) return canFlowInto(x, by, z);
+    uint8_t bd = getWaterDepth(x, by, z);
+    return bd == 0xFF || bd > 1;
   };
 
   static const int flowDx[4] = {-1, 1, 0, 0};
   static const int flowDz[4] = {0, 0, -1, 1};
-  static const int oppositeDir[4] = {1, 0, 3, 2};
-  const int maxFlowSearch = 7;
 
-  std::function<int(int, int, int, int, int)> flowCost =
-      [&](int x, int y, int z, int dist, int fromDir) -> int {
-    if (hasDownwardExit(x, y, z)) return dist;
-    if (dist >= maxFlowSearch) return 999;
+  int spanX = simMaxX - simMinX + 1;
+  int spanY = simMaxY - simMinY + 1;
+  int spanZ = simMaxZ - simMinZ + 1;
+  int scanVolume = spanX * spanY * spanZ;
+  if (scanVolume <= 0) return;
+  if (m_waterScanCursor < 0 || m_waterScanCursor >= scanVolume) m_waterScanCursor = 0;
 
-    int best = 999;
-    for (int i = 0; i < 4; ++i) {
-      if (fromDir >= 0 && i == oppositeDir[fromDir]) continue;
-      int nx = x + flowDx[i], nz = z + flowDz[i];
-      if (!inBounds(nx, y, nz)) continue;
-      if (!canFlowInto(nx, y, nz)) continue;
-      int c = flowCost(nx, y, nz, dist + 1, i);
-      if (c < best) best = c;
+  for (int n = 0; n < scanVolume && !budgetReached; ++n) {
+    int idx = m_waterScanCursor + n;
+    if (idx >= scanVolume) idx -= scanVolume;
+
+    int lx = idx % spanX;
+    int yz = idx / spanX;
+    int lz = yz % spanZ;
+    int ly = yz / spanZ;
+
+    int x = simMinX + lx;
+    int z = simMinZ + lz;
+    int y = simMaxY - ly;
+
+    uint8_t id = getBlock(x, y, z);
+    if (!isWaterBlock(id)) continue;
+    if (++processedWaterCells > maxWaterCellsPerTick) {
+      budgetReached = true;
+      break;
     }
-    return best;
-  };
 
-  for (int y = simMaxY; y >= simMinY && !budgetReached; --y) {
-    for (int z = simMinZ; z <= simMaxZ; ++z) {
-      for (int x = simMinX; x <= simMaxX; ++x) {
-        uint8_t id = getBlock(x, y, z);
-        if (!isWaterBlock(id)) continue;
-        if (++processedWaterCells > maxWaterCellsPerTick) {
-          budgetReached = true;
-          break;
-        }
+    // Skip fully enclosed still-water interior (large lakes/oceans) to reduce
+    // heavy per-block work near big water bodies.
+    if (id == BLOCK_WATER_STILL) {
+      bool waterAbove = isWaterBlock(getBlock(x, y + 1, z));
+      bool waterBelow = isWaterBlock(getBlock(x, y - 1, z));
+      bool waterSides =
+          isWaterBlock(getBlock(x - 1, y, z)) &&
+          isWaterBlock(getBlock(x + 1, y, z)) &&
+          isWaterBlock(getBlock(x, y, z - 1)) &&
+          isWaterBlock(getBlock(x, y, z + 1));
+      if (waterAbove && waterBelow && waterSides) continue;
+    }
+    uint8_t curDepth = getWaterDepth(x, y, z);
+    if (curDepth == 0xFF) curDepth = (id == BLOCK_WATER_STILL) ? 0 : 1;
 
-        // Skip fully enclosed still-water interior (large lakes/oceans) to reduce
-        // heavy per-block work near big water bodies.
-        if (id == BLOCK_WATER_STILL) {
-          bool waterAbove = isWaterBlock(getBlock(x, y + 1, z));
-          bool waterBelow = isWaterBlock(getBlock(x, y - 1, z));
-          bool waterSides =
-              isWaterBlock(getBlock(x - 1, y, z)) &&
-              isWaterBlock(getBlock(x + 1, y, z)) &&
-              isWaterBlock(getBlock(x, y, z - 1)) &&
-              isWaterBlock(getBlock(x, y, z + 1));
-          if (waterAbove && waterBelow && waterSides) continue;
-        }
-        uint8_t curDepth = getWaterDepth(x, y, z);
-        if (curDepth == 0xFF) curDepth = (id == BLOCK_WATER_STILL) ? 0 : 1;
+    if (id == BLOCK_WATER_STILL) curDepth = 0;
 
-        if (id == BLOCK_WATER_STILL) curDepth = 0;
-
-        // Prefer downward flow.
-        int by = y - 1;
-        bool flowedDown = false;
-        if (by >= 0 && canFlowInto(x, by, z)) {
+    // Prefer downward flow.
+    int by = y - 1;
+    bool flowedDown = false;
+    if (by >= 0) {
+      uint8_t belowId = getBlock(x, by, z);
+      if (!isWaterBlock(belowId)) {
+        if (canFlowInto(x, by, z)) {
           queueSet(x, by, z, BLOCK_WATER_FLOW, 1);
           flowedDown = true;
         }
-
-        // Horizontal spread and depth propagation.
-        uint8_t neighborMin = 7;
-        bool hasWaterNeighbor = false;
-        int sourceNeighbors = 0;
-        bool hasWaterAbove = isWaterBlock(getBlock(x, y + 1, z));
-        for (int i = 0; i < 4; ++i) {
-          int nx = x + flowDx[i], nz = z + flowDz[i];
-          if (!inBounds(nx, y, nz)) continue;
-          uint8_t nId = getBlock(nx, y, nz);
-          if (isWaterBlock(nId)) {
-            hasWaterNeighbor = true;
-            uint8_t nd = getWaterDepth(nx, y, nz);
-            if (nd == 0xFF) nd = (nId == BLOCK_WATER_STILL) ? 0 : 1;
-            if (nd == 0) sourceNeighbors++;
-            if (nd != 0xFF && nd < neighborMin) neighborMin = nd;
-          }
-        }
-        uint8_t belowId = getBlock(x, y - 1, z);
-        bool supportBelow = (y == 0) || g_blockProps[belowId].isSolid() || isWaterBlock(belowId);
-
-        uint8_t nextDepth = curDepth;
-        if (id == BLOCK_WATER_STILL) {
-          nextDepth = 0;
-        } else {
-          if (hasWaterAbove) nextDepth = 1;
-          else if (sourceNeighbors >= 2 && supportBelow) nextDepth = 0;
-          else if (neighborMin < 7) nextDepth = (uint8_t)(neighborMin + 1);
-          else nextDepth = 8;
-        }
-
-        if (nextDepth <= 7) {
-          uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
-          if (spreadDepth <= 7 && !flowedDown) {
-            bool useShortestPathPriority = isWaterBlock(id);
-            int costs[4] = {999, 999, 999, 999};
-            int bestCost = 999;
-            bool canSpread[4] = {false, false, false, false};
-            for (int i = 0; i < 4; ++i) {
-              int nx = x + flowDx[i], nz = z + flowDz[i];
-              if (!inBounds(nx, y, nz)) continue;
-              if (!canFlowInto(nx, y, nz)) continue;
-              canSpread[i] = true;
-              if (useShortestPathPriority) {
-                costs[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCost(nx, y, nz, 1, i);
-              } else {
-                // Still/source blocks spread cheaply; avoid expensive recursive path search.
-                costs[i] = hasDownwardExit(nx, y, nz) ? 0 : 1;
-              }
-              if (costs[i] < bestCost) bestCost = costs[i];
-            }
-            for (int i = 0; i < 4; ++i) {
-              if (!canSpread[i]) continue;
-              if (bestCost != 999 && costs[i] != bestCost) continue;
-              int nx = x + flowDx[i], nz = z + flowDz[i];
-              uint8_t nId = getBlock(nx, y, nz);
-              uint8_t nDepth = getWaterDepth(nx, y, nz);
-              if (!isWaterBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
-                queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
-              }
-            }
-          }
-          if (id == BLOCK_WATER_FLOW) {
-            if (nextDepth >= 8 || (!hasWaterAbove && !hasWaterNeighbor && !flowedDown)) {
-              queueSet(x, y, z, BLOCK_AIR, 0xFF);
-            } else {
-              queueSet(x, y, z, (nextDepth == 0) ? BLOCK_WATER_STILL : BLOCK_WATER_FLOW, nextDepth);
-            }
-          } else {
-            queueSet(x, y, z, BLOCK_WATER_STILL, 0);
-          }
-        } else {
-          queueSet(x, y, z, BLOCK_AIR, 0xFF);
+      } else {
+        uint8_t belowDepth = getWaterDepth(x, by, z);
+        if (belowDepth == 0xFF || belowDepth > 1) {
+          queueSet(x, by, z, BLOCK_WATER_FLOW, 1);
+          flowedDown = true;
         }
       }
     }
+
+    // Horizontal spread and depth propagation.
+    uint8_t neighborMin = 7;
+    bool hasWaterNeighbor = false;
+    int sourceNeighbors = 0;
+    bool hasWaterAbove = isWaterBlock(getBlock(x, y + 1, z));
+    for (int i = 0; i < 4; ++i) {
+      int nx = x + flowDx[i], nz = z + flowDz[i];
+      if (!inBounds(nx, y, nz)) continue;
+      uint8_t nId = getBlock(nx, y, nz);
+      if (isWaterBlock(nId)) {
+        hasWaterNeighbor = true;
+        uint8_t nd = getWaterDepth(nx, y, nz);
+        if (nd == 0xFF) nd = (nId == BLOCK_WATER_STILL) ? 0 : 1;
+        if (nd == 0) sourceNeighbors++;
+        if (nd != 0xFF && nd < neighborMin) neighborMin = nd;
+      }
+    }
+    uint8_t belowId = getBlock(x, y - 1, z);
+    bool supportBelow = (y == 0) || g_blockProps[belowId].isSolid() || isWaterBlock(belowId);
+
+    uint8_t nextDepth = curDepth;
+    if (id == BLOCK_WATER_STILL) {
+      nextDepth = 0;
+    } else {
+      if (hasWaterAbove) nextDepth = 1;
+      else if (sourceNeighbors >= 2 && supportBelow) nextDepth = 0;
+      else if (neighborMin < 7) nextDepth = (uint8_t)(neighborMin + 1);
+      else nextDepth = 8;
+    }
+
+    if (nextDepth <= 7) {
+      uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
+      if (spreadDepth <= 7 && !flowedDown) {
+        // New local-only spreading model:
+        // 1) Prefer a side cell that can immediately flow down (waterfall behavior).
+        // 2) Otherwise only flowing water may creep sideways (one direction), still
+        //    water does not carpet-spread on flat tops.
+        int chosenDir = -1;
+        int fallbackDir = -1;
+        uint8_t fallbackDepth = 0xFF;
+
+        for (int i = 0; i < 4; ++i) {
+          int nx = x + flowDx[i], nz = z + flowDz[i];
+          if (!inBounds(nx, y, nz)) continue;
+          if (!canFlowInto(nx, y, nz)) continue;
+
+          if (hasDownwardExit(nx, y, nz)) {
+            chosenDir = i;
+            break;
+          }
+
+          if (id == BLOCK_WATER_FLOW) {
+            uint8_t nId = getBlock(nx, y, nz);
+            uint8_t nDepth = getWaterDepth(nx, y, nz);
+            uint8_t score = isWaterBlock(nId) ? ((nDepth == 0xFF) ? 7 : nDepth) : 0;
+            if (fallbackDir < 0 || score < fallbackDepth) {
+              fallbackDir = i;
+              fallbackDepth = score;
+            }
+          }
+        }
+
+        if (chosenDir < 0) chosenDir = fallbackDir;
+
+        if (chosenDir >= 0) {
+          int nx = x + flowDx[chosenDir], nz = z + flowDz[chosenDir];
+          uint8_t nId = getBlock(nx, y, nz);
+          uint8_t nDepth = getWaterDepth(nx, y, nz);
+          if (!isWaterBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
+            queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
+          }
+        }
+      }
+      if (id == BLOCK_WATER_FLOW) {
+        if (nextDepth >= 8 || (!hasWaterAbove && !hasWaterNeighbor && !flowedDown)) {
+          queueSet(x, y, z, BLOCK_AIR, 0xFF);
+        } else {
+          queueSet(x, y, z, (nextDepth == 0) ? BLOCK_WATER_STILL : BLOCK_WATER_FLOW, nextDepth);
+        }
+      } else {
+        queueSet(x, y, z, BLOCK_WATER_STILL, 0);
+      }
+    } else {
+      queueSet(x, y, z, BLOCK_AIR, 0xFF);
+    }
+  }
+
+  if (scanVolume > 1) {
+    int advance = maxWaterCellsPerTick;
+    if (advance < 1) advance = 1;
+    m_waterScanCursor += advance;
+    if (m_waterScanCursor >= scanVolume) m_waterScanCursor %= scanVolume;
+  } else {
+    m_waterScanCursor = 0;
   }
 
   for (const auto &op : ops) {
@@ -256,7 +288,10 @@ void Level::tickWater() {
     }
     setWaterDepth(op.x, op.y, op.z, op.depth);
   }
-  m_waterDirty = !ops.empty();
+  // Keep simulation awake if we hit the per-tick budget, otherwise cells later in
+  // the rotating scan window may never get processed and appear "stuck" until
+  // another world interaction wakes water again.
+  m_waterDirty = budgetReached || !ops.empty();
 }
 
 Level::Level() {
