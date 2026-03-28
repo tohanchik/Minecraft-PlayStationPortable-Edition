@@ -7,6 +7,7 @@ PSPSDK = $(shell psp-config --pspsdk-path)
 
 # Metadata EBOOT
 EXTRA_TARGETS = EBOOT.PBP
+.DEFAULT_GOAL := EBOOT.PBP
 PSP_EBOOT_TITLE  = Minecraft PSP
 # PSP_EBOOT_ICON   = res/ICON0.PNG
 
@@ -31,6 +32,7 @@ SRCS = src/main.cpp \
        src/render/SkyRenderer.cpp \
        src/render/CloudRenderer.cpp \
        src/render/BlockHighlight.cpp \
+       src/render/PigMob.cpp \
        src/math/Frustum.cpp \
        src/input/PSPInput.cpp
 
@@ -56,6 +58,25 @@ LIBS = -lstdc++ \
        -lpsprtc \
        -lpsppower \
        -lm
+
+
+# Packaging
+DIST_DIR = dist/$(TARGET)
+DIST_ZIP = dist/$(TARGET).zip
+
+.PHONY: package clean-dist
+
+package: $(EXTRA_TARGETS)
+	@mkdir -p $(DIST_DIR)
+	@cp -f EBOOT.PBP $(DIST_DIR)/EBOOT.PBP
+	@cp -r res $(DIST_DIR)/
+	@echo "commit=$$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" > $(DIST_DIR)/BUILD_INFO.txt
+	@echo "built_utc=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $(DIST_DIR)/BUILD_INFO.txt
+	@cd dist && zip -qr $(TARGET).zip $(TARGET)
+	@echo "Created $(DIST_ZIP)"
+
+clean-dist:
+	@rm -rf dist
 
 # Build
 include $(PSPSDK)/lib/build.mak
