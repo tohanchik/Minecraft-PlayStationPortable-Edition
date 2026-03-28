@@ -13,6 +13,7 @@
 #include "render/BlockHighlight.h"
 #include "render/ChunkRenderer.h"
 #include "render/CloudRenderer.h"
+#include "render/PigMob.h"
 #include "world/Level.h"
 #include "world/AABB.h"
 #include "render/PSPRenderer.h"
@@ -84,7 +85,7 @@ static const uint8_t g_inventoryItems[] = {
   BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
   BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK, BLOCK_BOOKSHELF,
   BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN, BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
-  BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_WATER_STILL
+  BLOCK_PIG, BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_WATER_STILL
 };
 
 struct HudColVert {
@@ -252,6 +253,10 @@ static bool game_init() {
   g_player.isFlying = false;
   g_player.jumpDoubleTapTimer = 0.0f;
   g_heldBlock = g_hotbar[g_hotbarSel];
+
+  if (!PigMob_Init(g_player.x, g_player.y, g_player.z, g_player.yaw))
+    return false;
+
   return true;
 }
 
@@ -445,6 +450,8 @@ static void game_update(float dt) {
   }
   g_heldBlock = g_hotbar[g_hotbarSel];
 
+  PigMob_Update(dt, g_player.x, g_player.y, g_player.z, g_player.yaw);
+
   // Block breaking
   bool doBreak = false;
   if (PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && breakCooldown <= 0.0f) {
@@ -566,6 +573,8 @@ static void game_render() {
   if (g_cloudRenderer)
     g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, 0.0f);
 
+  PigMob_Render();
+
   // 2D HUD pass
   sceGuDisable(GU_DEPTH_TEST);
   sceGuDisable(GU_CULL_FACE);
@@ -592,7 +601,8 @@ int main(int argc, char *argv[]) {
 
   uint64_t lastTime = sceKernelGetSystemTimeWide();
 
-  while (true) {
+  bool running = true;
+  while (running) {
     uint64_t now = sceKernelGetSystemTimeWide();
     float dt = (float)(now - lastTime) / 1000000.0f; // microseconds -> seconds
     if (dt > 0.05f)
@@ -601,7 +611,19 @@ int main(int argc, char *argv[]) {
 
     game_update(dt);
     game_render();
+
+    if (PSPInput_JustPressed(PSP_CTRL_START)) {
+      running = false;
+    }
   }
+
+  PigMob_Shutdown();
+  delete g_chunkRenderer; g_chunkRenderer = nullptr;
+  delete g_cloudRenderer; g_cloudRenderer = nullptr;
+  delete g_skyRenderer; g_skyRenderer = nullptr;
+  delete g_level; g_level = nullptr;
+  delete g_atlas; g_atlas = nullptr;
+  PSPRenderer_Shutdown();
 
   return 0;
 }
