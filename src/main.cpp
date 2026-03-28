@@ -13,6 +13,7 @@
 #include "render/BlockHighlight.h"
 #include "render/ChunkRenderer.h"
 #include "render/CloudRenderer.h"
+#include "render/PigMob.h"
 #include "world/Level.h"
 #include "world/AABB.h"
 #include "render/PSPRenderer.h"
@@ -31,6 +32,7 @@ PSP_HEAP_SIZE_KB(-1024); // Use all available RAM minus 1MB for the kernel
 
 // Exit callback (HOME button)
 int exit_callback(int arg1, int arg2, void *common) {
+  PigMob_Shutdown();
   sceKernelExitGame();
   return 0;
 }
@@ -66,6 +68,7 @@ static SkyRenderer *g_skyRenderer = nullptr;
 static CloudRenderer *g_cloudRenderer = nullptr;
 static ChunkRenderer *g_chunkRenderer = nullptr;
 static TextureAtlas *g_atlas = nullptr;
+static PigMob g_pig;
 static RayHit g_hitResult;       // Block the player is currently looking at
 static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
 
@@ -111,6 +114,8 @@ static bool game_init() {
   g_player.onGround = false;
   g_player.isFlying = false;
   g_player.jumpDoubleTapTimer = 0.0f;
+
+  PigMob_Init(&g_pig, g_level, 0xC406500);
 
   return true;
 }
@@ -333,6 +338,8 @@ static void game_update(float dt) {
     }
   }
 
+  PigMob_Update(&g_pig, g_level, dt, g_player.x, g_player.y, g_player.z);
+
   // Cycle hotbar
   static const uint8_t PLACEABLE[] = {
     BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
@@ -398,6 +405,8 @@ static void game_render() {
   if (g_cloudRenderer)
     g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, 0.0f);
 
+  PigMob_Render(&g_pig, g_atlas);
+
   // TODO: HUD (hotbar, crosshair)
 
   PSPRenderer_EndFrame();
@@ -427,5 +436,6 @@ int main(int argc, char *argv[]) {
     game_render();
   }
 
+  PigMob_Shutdown();
   return 0;
 }
