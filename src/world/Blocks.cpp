@@ -86,6 +86,7 @@ void Blocks_Init() {
   DEF_PROPS(BLOCK_CLAY, 6, 0, 15, SOLID);
   DEF_PROPS(BLOCK_NETHERRACK, 4, 0, 15, SOLID);
   DEF_PROPS(BLOCK_GLOWSTONE, 3, 15, 15, SOLID);
+  DEF_PROPS(BLOCK_PIG, 8, 0, 15, SOLID);
   DEF_PROPS(BLOCK_FENCE, 20, 0, 0, TRANSP);
   DEF_PROPS(BLOCK_CHEST, 25, 0, 0, SOLID);
   DEF_PROPS(BLOCK_MOSSY_COBBLE, 20, 0, 15, SOLID);
@@ -140,6 +141,8 @@ void Blocks_Init() {
   DEF_UV(BLOCK_SNOW_BLOCK, 2, 4, 4, 4, 2, 4);
   DEF_UV(BLOCK_NETHERRACK, 7, 6, 7, 6, 7, 6);
   DEF_UV(BLOCK_GLOWSTONE, 9, 6, 9, 6, 9, 6);
+  // Pig block: temporary decorative block using pink wool tint from terrain atlas.
+  DEF_UV(BLOCK_PIG, 6, 8, 6, 8, 6, 8);
   DEF_UV(BLOCK_CHEST, 10, 1, 9, 1, 10, 1);
   DEF_UV(BLOCK_MOSSY_COBBLE, 4, 2, 4, 2, 4, 2);
   DEF_UV(BLOCK_CLAY, 8, 4, 8, 4, 8, 4);
