@@ -116,29 +116,6 @@ void Level::tickWater() {
 
   static const int flowDx[4] = {-1, 1, 0, 0};
   static const int flowDz[4] = {0, 0, -1, 1};
-  static const int oppositeDir[4] = {1, 0, 3, 2};
-  const int maxFlowSearch = 7;
-
-  std::function<int(int, int, int, int, int)> flowCost =
-      [&](int x, int y, int z, int dist, int fromDir) -> int {
-    if (hasDownwardExit(x, y, z)) return dist;
-    if (dist >= maxFlowSearch) return 999;
-
-    int best = 999;
-    for (int i = 0; i < 4; ++i) {
-      if (fromDir >= 0 && i == oppositeDir[fromDir]) continue;
-      int nx = x + flowDx[i], nz = z + flowDz[i];
-      if (!inBounds(nx, y, nz)) continue;
-      if (!canFlowInto(nx, y, nz)) continue;
-      // Path search should evaluate dry/passable routes, not travel through
-      // already-flooded cells (otherwise one source can "see" distant exits
-      // through water and keep expanding like a tsunami).
-      if (isWaterBlock(getBlock(nx, y, nz))) continue;
-      int c = flowCost(nx, y, nz, dist + 1, i);
-      if (c < best) best = c;
-    }
-    return best;
-  };
 
   int spanX = simMaxX - simMinX + 1;
   int spanY = simMaxY - simMinY + 1;
@@ -236,41 +213,43 @@ void Level::tickWater() {
     if (nextDepth <= 7) {
       uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
       if (spreadDepth <= 7 && !flowedDown) {
-        bool useShortestPathPriority = isWaterBlock(id);
-        int costs[4] = {999, 999, 999, 999};
-        int bestCost = 999;
-        bool canSpread[4] = {false, false, false, false};
+        // New local-only spreading model:
+        // 1) Prefer a side cell that can immediately flow down (waterfall behavior).
+        // 2) Otherwise only flowing water may creep sideways (one direction), still
+        //    water does not carpet-spread on flat tops.
+        int chosenDir = -1;
+        int fallbackDir = -1;
+        uint8_t fallbackDepth = 0xFF;
+
         for (int i = 0; i < 4; ++i) {
           int nx = x + flowDx[i], nz = z + flowDz[i];
           if (!inBounds(nx, y, nz)) continue;
           if (!canFlowInto(nx, y, nz)) continue;
-          canSpread[i] = true;
-          if (useShortestPathPriority) {
-            costs[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCost(nx, y, nz, 1, i);
-          } else {
-            costs[i] = hasDownwardExit(nx, y, nz) ? 0 : 1;
-          }
-          if (costs[i] < bestCost) bestCost = costs[i];
-        }
-        // If no downhill route was found within search range, do not fan out in all
-        // directions (causes "tsunami" growth from one source on plateaus/cliffs).
-        if (bestCost < 999) {
-          // Keep flow narrow/predictable: pick one best direction instead of
-          // fanning out into all equal-cost directions at once.
-          int chosenDir = -1;
-          for (int i = 0; i < 4; ++i) {
-            if (!canSpread[i]) continue;
-            if (costs[i] != bestCost) continue;
+
+          if (hasDownwardExit(nx, y, nz)) {
             chosenDir = i;
             break;
           }
-          if (chosenDir >= 0) {
-            int nx = x + flowDx[chosenDir], nz = z + flowDz[chosenDir];
+
+          if (id == BLOCK_WATER_FLOW) {
             uint8_t nId = getBlock(nx, y, nz);
             uint8_t nDepth = getWaterDepth(nx, y, nz);
-            if (!isWaterBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
-              queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
+            uint8_t score = isWaterBlock(nId) ? ((nDepth == 0xFF) ? 7 : nDepth) : 0;
+            if (fallbackDir < 0 || score < fallbackDepth) {
+              fallbackDir = i;
+              fallbackDepth = score;
             }
+          }
+        }
+
+        if (chosenDir < 0) chosenDir = fallbackDir;
+
+        if (chosenDir >= 0) {
+          int nx = x + flowDx[chosenDir], nz = z + flowDz[chosenDir];
+          uint8_t nId = getBlock(nx, y, nz);
+          uint8_t nDepth = getWaterDepth(nx, y, nz);
+          if (!isWaterBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
+            queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
           }
         }
       }
