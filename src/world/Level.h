@@ -90,4 +90,5 @@ private:
   int m_waterWakeZ = -1;
   int m_waterWakeRadius = 12;
   int m_waterWakeTicks = 0;
+  int m_waterScanCursor = 0;
 };
