@@ -22,11 +22,17 @@ To play this on real hardware, you will need:
 If you want to compile the game yourself, you need the official PSP SDK set up on your machine.
 1. Clone the repository.
 2. Ensure `psp-gcc` and the PSPSDK environment variables are correctly configured.
-3. Simply run:
+3. Build the game:
 ```bash
 make
 ```
-4. Copy the resulting `EBOOT.PBP` alongside the `res` folder to your PSP (`ms0:/PSP/GAME/MinecraftPSP/`).
+4. (Recommended) Create a ready-to-copy archive with `EBOOT.PBP` + `res`:
+```bash
+make package
+```
+This generates `dist/MinecraftPSP.zip` containing `MinecraftPSP/EBOOT.PBP` and `MinecraftPSP/res/`.
+
+5. Copy `EBOOT.PBP` alongside the `res` folder to your PSP (`ms0:/PSP/GAME/MinecraftPSP/`) — either manually or from the generated zip.
 
 ## Contribute
 **We need your help!** 
