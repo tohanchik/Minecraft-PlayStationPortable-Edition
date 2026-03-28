@@ -77,6 +77,7 @@ private:
   Chunk *m_chunks[WORLD_CHUNKS_X][WORLD_CHUNKS_Z];
   std::vector<uint8_t> m_waterDepth;
   long long m_time = 6000LL;
+  int m_timeTickAccum = 0;
   float m_lastSunBrightness = 1.0f;
   int m_waterTickAccum = 0;
   int m_simFocusX = -1;
