@@ -23,6 +23,7 @@
 #include "world/Random.h"
 #include "world/Raycast.h"
 #include <math.h>
+#include <stdio.h>
 
 // PSP module metadata
 PSP_MODULE_INFO("MinecraftPSP", PSP_MODULE_USER, 1, 0);
@@ -74,6 +75,7 @@ static int g_inventorySel = 0;
 static int g_inventoryScroll = 0;
 static bool g_hotbarAssignMode = false;
 static int g_pendingInventoryItem = -1;
+static const char *g_inventoryHoverName = nullptr;
 static uint8_t g_hotbar[9] = {
   BLOCK_COBBLESTONE, BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD_PLANK, BLOCK_GLASS,
   BLOCK_SAND, BLOCK_LOG, BLOCK_LEAVES, BLOCK_WATER_STILL
@@ -137,7 +139,40 @@ static inline void hudGetIconTile(uint8_t id, int &tx, int &ty) {
   }
 }
 
+static const char* getBlockDisplayName(uint8_t id) {
+  switch (id) {
+    case BLOCK_STONE: return "Stone";
+    case BLOCK_GRASS: return "Grass";
+    case BLOCK_DIRT: return "Dirt";
+    case BLOCK_COBBLESTONE: return "Cobblestone";
+    case BLOCK_WOOD_PLANK: return "Wood Planks";
+    case BLOCK_SAND: return "Sand";
+    case BLOCK_GRAVEL: return "Gravel";
+    case BLOCK_LOG: return "Log";
+    case BLOCK_LEAVES: return "Leaves";
+    case BLOCK_GLASS: return "Glass";
+    case BLOCK_SANDSTONE: return "Sandstone";
+    case BLOCK_WOOL: return "Wool";
+    case BLOCK_GOLD_BLOCK: return "Gold Block";
+    case BLOCK_IRON_BLOCK: return "Iron Block";
+    case BLOCK_BRICK: return "Bricks";
+    case BLOCK_BOOKSHELF: return "Bookshelf";
+    case BLOCK_MOSSY_COBBLE: return "Mossy Cobblestone";
+    case BLOCK_OBSIDIAN: return "Obsidian";
+    case BLOCK_GLOWSTONE: return "Glowstone";
+    case BLOCK_PUMPKIN: return "Pumpkin";
+    case BLOCK_FLOWER: return "Dandelion";
+    case BLOCK_ROSE: return "Rose";
+    case BLOCK_SAPLING: return "Sapling";
+    case BLOCK_TALLGRASS: return "Tall Grass";
+    case BLOCK_WATER_STILL: return "Water";
+    case BLOCK_WATER_FLOW: return "Flowing Water";
+    default: return "Unknown Block";
+  }
+}
+
 static void drawHotbarHUD() {
+  g_inventoryHoverName = nullptr;
   const float slot = 24.0f;
   const float pad = 3.0f;
   const float totalW = 9 * slot + 8 * pad;
@@ -194,6 +229,10 @@ static void drawHotbarHUD() {
       hudDrawTile(g_atlas, tx, ty, px, py, 24);
     }
 
+    if (g_inventorySel >= 0 && g_inventorySel < invCount) {
+      g_inventoryHoverName = getBlockDisplayName(g_inventoryItems[g_inventorySel]);
+    }
+
     // Scroll indicator
     int maxScroll = (invCount + cols - 1) / cols - rows;
     if (maxScroll < 0) maxScroll = 0;
@@ -211,6 +250,8 @@ static inline bool isWaterId(uint8_t id) {
 
 // Initialization
 static bool game_init() {
+  pspDebugScreenInit();
+  pspDebugScreenSetBase((u32 *)0x44000000);
   // Overclock PSP to max for performance
   scePowerSetClockFrequency(333, 333, 166);
 
@@ -576,7 +617,16 @@ static void game_render() {
   sceGuEnable(GU_CULL_FACE);
   sceGuEnable(GU_DEPTH_TEST);
 
-  PSPRenderer_EndFrame();
+  void *fb = PSPRenderer_EndFrame();
+
+  // Draw inventory hover text with PSP debug font.
+  pspDebugScreenSetOffset((int)fb - 0x44000000);
+  pspDebugScreenSetXY(1, 1);
+  if (g_inventoryOpen && g_inventoryHoverName) {
+    pspDebugScreenPrintf("Item: %-24s", g_inventoryHoverName);
+  } else {
+    pspDebugScreenPrintf("%-31s", "");
+  }
 }
 
 // Main entry point
