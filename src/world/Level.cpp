@@ -3,8 +3,9 @@
 #include "WorldGen.h"
 #include "TreeFeature.h"
 #include <vector>
-#include <functional>
 #include <string.h>
+#include <stdio.h>
+#include <stdint.h>
 
 struct LightNode {
   int x, y, z;
@@ -100,41 +101,107 @@ void Level::tickWater() {
   auto canFlowInto = [&](int x, int y, int z) {
     if (!inBounds(x, y, z)) return false;
     uint8_t t = getBlock(x, y, z);
+    if (t == BLOCK_LAVA_FLOW || t == BLOCK_LAVA_STILL) return false;
     if (t == BLOCK_AIR) return true;
     if (isWaterBlock(t)) return true;
     return !g_blockProps[t].isSolid();
   };
 
-  auto hasDownwardExit = [&](int x, int y, int z) {
-    int by = y - 1;
-    return by >= 0 && canFlowInto(x, by, z);
+  auto isWaterBlocking = [&](int x, int y, int z) {
+    if (!inBounds(x, y, z)) return true;
+    uint8_t t = getBlock(x, y, z);
+    if (t == BLOCK_DOOR_WOOD || t == BLOCK_DOOR_IRON ||
+        t == BLOCK_SIGN || t == BLOCK_LADDER || t == BLOCK_REEDS) return true;
+    return g_blockProps[t].isSolid();
+  };
+
+  auto isSourceWater = [&](int x, int y, int z) {
+    if (!inBounds(x, y, z)) return false;
+    uint8_t t = getBlock(x, y, z);
+    if (!isWaterBlock(t)) return false;
+    uint8_t d = getWaterDepth(x, y, z);
+    if (d == 0xFF) d = (t == BLOCK_WATER_STILL) ? 0 : 1;
+    return d == 0;
   };
 
   static const int flowDx[4] = {-1, 1, 0, 0};
   static const int flowDz[4] = {0, 0, -1, 1};
-  static const int oppositeDir[4] = {1, 0, 3, 2};
-  const int maxFlowSearch = 7;
+  // NOTE: In this simplified global-tick model (without MCPE's per-tile tick queue),
+  // using 7 here better reproduces the observed "stream to far edge pit" behavior.
+  const int flowSearchMax = 7;
+  const int flowSearchDiam = flowSearchMax * 2 + 1;
+  const int flowSearchCap = flowSearchDiam * flowSearchDiam;
 
-  std::function<int(int, int, int, int, int)> flowCost =
-      [&](int x, int y, int z, int dist, int fromDir) -> int {
-    if (hasDownwardExit(x, y, z)) return dist;
-    if (dist >= maxFlowSearch) return 999;
-
-    int best = 999;
-    for (int i = 0; i < 4; ++i) {
-      if (fromDir >= 0 && i == oppositeDir[fromDir]) continue;
-      int nx = x + flowDx[i], nz = z + flowDz[i];
-      if (!inBounds(nx, y, nz)) continue;
-      if (!canFlowInto(nx, y, nz)) continue;
-      int c = flowCost(nx, y, nz, dist + 1, i);
-      if (c < best) best = c;
-    }
-    return best;
+  auto hasDownwardExit = [&](int x, int y, int z) {
+    if (y <= 0) return false;
+    return !isWaterBlocking(x, y - 1, z);
   };
 
+  auto flowCost = [&](int sx, int y, int sz) {
+    if (!inBounds(sx, y, sz) || isWaterBlocking(sx, y, sz)) return 999;
+    if (isSourceWater(sx, y, sz)) return 999;
+    if (hasDownwardExit(sx, y, sz)) return 0;
+
+    bool visited[flowSearchDiam][flowSearchDiam];
+    memset(visited, 0, sizeof(visited));
+
+    int qx[flowSearchCap];
+    int qz[flowSearchCap];
+    uint8_t qd[flowSearchCap];
+    int head = 0;
+    int tail = 0;
+
+    qx[tail] = sx;
+    qz[tail] = sz;
+    qd[tail] = 0;
+    tail++;
+    visited[flowSearchMax][flowSearchMax] = true;
+
+    while (head < tail) {
+      int cx = qx[head];
+      int cz = qz[head];
+      int cd = qd[head];
+      head++;
+      if (cd >= flowSearchMax) continue;
+
+      for (int i = 0; i < 4; ++i) {
+        int nx = cx + flowDx[i];
+        int nz = cz + flowDz[i];
+        int nd = cd + 1;
+
+        if (!inBounds(nx, y, nz) || isWaterBlocking(nx, y, nz)) continue;
+        if (isSourceWater(nx, y, nz)) continue;
+
+        int rx = nx - sx + flowSearchMax;
+        int rz = nz - sz + flowSearchMax;
+        if (rx < 0 || rx >= flowSearchDiam || rz < 0 || rz >= flowSearchDiam) continue;
+        if (visited[rx][rz]) continue;
+        visited[rx][rz] = true;
+
+        if (hasDownwardExit(nx, y, nz)) return nd;
+        if (nd >= flowSearchMax) continue;
+
+        qx[tail] = nx;
+        qz[tail] = nz;
+        qd[tail] = (uint8_t)nd;
+        tail++;
+      }
+    }
+    return 999;
+  };
+
+  int spanX = simMaxX - simMinX + 1;
+  int spanZ = simMaxZ - simMinZ + 1;
+  int startX = simMinX;
+  int startZ = simMinZ;
+  if (spanX > 0) startX = simMinX + (int)((m_time * 13LL) % spanX);
+  if (spanZ > 0) startZ = simMinZ + (int)((m_time * 17LL) % spanZ);
+
   for (int y = simMaxY; y >= simMinY && !budgetReached; --y) {
-    for (int z = simMinZ; z <= simMaxZ; ++z) {
-      for (int x = simMinX; x <= simMaxX; ++x) {
+    for (int oz = 0; oz < spanZ; ++oz) {
+      int z = simMinZ + ((startZ - simMinZ + oz) % spanZ);
+      for (int ox = 0; ox < spanX; ++ox) {
+        int x = simMinX + ((startX - simMinX + ox) % spanX);
         uint8_t id = getBlock(x, y, z);
         if (!isWaterBlock(id)) continue;
         if (++processedWaterCells > maxWaterCellsPerTick) {
@@ -184,15 +251,14 @@ void Level::tickWater() {
             if (nd != 0xFF && nd < neighborMin) neighborMin = nd;
           }
         }
-        uint8_t belowId = getBlock(x, y - 1, z);
-        bool supportBelow = (y == 0) || g_blockProps[belowId].isSolid() || isWaterBlock(belowId);
-
+        uint8_t belowId = (y > 0) ? getBlock(x, y - 1, z) : BLOCK_BEDROCK;
+        bool solidSupportBelow = g_blockProps[belowId].isSolid();
         uint8_t nextDepth = curDepth;
         if (id == BLOCK_WATER_STILL) {
           nextDepth = 0;
         } else {
           if (hasWaterAbove) nextDepth = 1;
-          else if (sourceNeighbors >= 2 && supportBelow) nextDepth = 0;
+          else if (sourceNeighbors >= 2 && solidSupportBelow) nextDepth = 0;
           else if (neighborMin < 7) nextDepth = (uint8_t)(neighborMin + 1);
           else nextDepth = 8;
         }
@@ -200,32 +266,27 @@ void Level::tickWater() {
         if (nextDepth <= 7) {
           uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
           if (spreadDepth <= 7 && !flowedDown) {
-            bool useShortestPathPriority = isWaterBlock(id);
-            int costs[4] = {999, 999, 999, 999};
+            int dirCost[4] = {999, 999, 999, 999};
             int bestCost = 999;
-            bool canSpread[4] = {false, false, false, false};
+            bool usePathGuidance = (id == BLOCK_WATER_STILL);
+            if (usePathGuidance) {
+              for (int i = 0; i < 4; ++i) {
+                int nx = x + flowDx[i], nz = z + flowDz[i];
+                if (!inBounds(nx, y, nz)) continue;
+                if (isWaterBlocking(nx, y, nz)) continue;
+                if (isSourceWater(nx, y, nz)) continue;
+                dirCost[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCost(nx, y, nz);
+                if (dirCost[i] < bestCost) bestCost = dirCost[i];
+              }
+            }
             for (int i = 0; i < 4; ++i) {
               int nx = x + flowDx[i], nz = z + flowDz[i];
               if (!inBounds(nx, y, nz)) continue;
               if (!canFlowInto(nx, y, nz)) continue;
-              canSpread[i] = true;
-              if (useShortestPathPriority) {
-                costs[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCost(nx, y, nz, 1, i);
-              } else {
-                // Still/source blocks spread cheaply; avoid expensive recursive path search.
-                costs[i] = hasDownwardExit(nx, y, nz) ? 0 : 1;
-              }
-              if (costs[i] < bestCost) bestCost = costs[i];
-            }
-            for (int i = 0; i < 4; ++i) {
-              if (!canSpread[i]) continue;
-              if (bestCost != 999 && costs[i] != bestCost) continue;
-              int nx = x + flowDx[i], nz = z + flowDz[i];
+              if (usePathGuidance && bestCost != 999 && dirCost[i] != bestCost) continue;
               uint8_t nId = getBlock(nx, y, nz);
-              uint8_t nDepth = getWaterDepth(nx, y, nz);
-              if (!isWaterBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
-                queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
-              }
+              if (isWaterBlock(nId)) continue;
+              queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
             }
           }
           if (id == BLOCK_WATER_FLOW) {
@@ -422,6 +483,94 @@ void Level::setBlockLight(int wx, int wy, int wz, uint8_t val) {
   if (cx < 0 || cx >= WORLD_CHUNKS_X || cz < 0 || cz >= WORLD_CHUNKS_Z || wy < 0 || wy >= CHUNK_SIZE_Y) return;
   uint8_t curSky = m_chunks[cx][cz]->getSkyLight(wx & 0xF, wy, wz & 0xF);
   m_chunks[cx][cz]->setLight(wx & 0xF, wy, wz & 0xF, curSky, val);
+}
+
+bool Level::saveToFile(const char *path) const {
+  if (!path) return false;
+  FILE *f = fopen(path, "wb");
+  if (!f) return false;
+
+  struct SaveHeader {
+    char magic[8];
+    uint32_t version;
+    uint32_t chunksX;
+    uint32_t chunksZ;
+    uint32_t chunkY;
+    int64_t time;
+    uint32_t waterSize;
+  } hdr;
+
+  memcpy(hdr.magic, "MCPSPWLD", 8);
+  hdr.version = 1;
+  hdr.chunksX = WORLD_CHUNKS_X;
+  hdr.chunksZ = WORLD_CHUNKS_Z;
+  hdr.chunkY = CHUNK_SIZE_Y;
+  hdr.time = m_time;
+  hdr.waterSize = (uint32_t)m_waterDepth.size();
+
+  if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
+
+  for (int cx = 0; cx < WORLD_CHUNKS_X; ++cx) {
+    for (int cz = 0; cz < WORLD_CHUNKS_Z; ++cz) {
+      const Chunk *ch = m_chunks[cx][cz];
+      if (fwrite(ch->blocks, sizeof(ch->blocks), 1, f) != 1) { fclose(f); return false; }
+      if (fwrite(ch->light, sizeof(ch->light), 1, f) != 1) { fclose(f); return false; }
+    }
+  }
+
+  if (!m_waterDepth.empty()) {
+    if (fwrite(m_waterDepth.data(), 1, m_waterDepth.size(), f) != m_waterDepth.size()) {
+      fclose(f);
+      return false;
+    }
+  }
+
+  fclose(f);
+  return true;
+}
+
+bool Level::loadFromFile(const char *path) {
+  if (!path) return false;
+  FILE *f = fopen(path, "rb");
+  if (!f) return false;
+
+  struct SaveHeader {
+    char magic[8];
+    uint32_t version;
+    uint32_t chunksX;
+    uint32_t chunksZ;
+    uint32_t chunkY;
+    int64_t time;
+    uint32_t waterSize;
+  } hdr;
+
+  if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
+  if (memcmp(hdr.magic, "MCPSPWLD", 8) != 0 || hdr.version != 1) { fclose(f); return false; }
+  if (hdr.chunksX != WORLD_CHUNKS_X || hdr.chunksZ != WORLD_CHUNKS_Z || hdr.chunkY != CHUNK_SIZE_Y) { fclose(f); return false; }
+  if (hdr.waterSize != m_waterDepth.size()) { fclose(f); return false; }
+
+  for (int cx = 0; cx < WORLD_CHUNKS_X; ++cx) {
+    for (int cz = 0; cz < WORLD_CHUNKS_Z; ++cz) {
+      Chunk *ch = m_chunks[cx][cz];
+      ch->cx = cx;
+      ch->cz = cz;
+      if (fread(ch->blocks, sizeof(ch->blocks), 1, f) != 1) { fclose(f); return false; }
+      if (fread(ch->light, sizeof(ch->light), 1, f) != 1) { fclose(f); return false; }
+      for (int sy = 0; sy < 4; ++sy) ch->dirty[sy] = true;
+    }
+  }
+
+  if (!m_waterDepth.empty()) {
+    if (fread(m_waterDepth.data(), 1, m_waterDepth.size(), f) != m_waterDepth.size()) {
+      fclose(f);
+      return false;
+    }
+  }
+
+  fclose(f);
+  m_time = hdr.time;
+  m_waterDirty = true;
+  return true;
 }
 
 void Level::generate(Random *rng) {
