@@ -3,7 +3,6 @@
 #include "WorldGen.h"
 #include "TreeFeature.h"
 #include <vector>
-#include <functional>
 #include <string.h>
 
 struct LightNode {
@@ -105,31 +104,65 @@ void Level::tickWater() {
     return !g_blockProps[t].isSolid();
   };
 
-  auto hasDownwardExit = [&](int x, int y, int z) {
-    int by = y - 1;
-    return by >= 0 && canFlowInto(x, by, z);
-  };
-
   static const int flowDx[4] = {-1, 1, 0, 0};
   static const int flowDz[4] = {0, 0, -1, 1};
-  static const int oppositeDir[4] = {1, 0, 3, 2};
-  const int maxFlowSearch = 7;
+  const int flowSearchMax = 7;
+  const int flowSearchDiam = flowSearchMax * 2 + 1;
+  const int flowSearchCap = flowSearchDiam * flowSearchDiam;
 
-  std::function<int(int, int, int, int, int)> flowCost =
-      [&](int x, int y, int z, int dist, int fromDir) -> int {
-    if (hasDownwardExit(x, y, z)) return dist;
-    if (dist >= maxFlowSearch) return 999;
+  auto hasDownwardExit = [&](int x, int y, int z) {
+    return y > 0 && canFlowInto(x, y - 1, z);
+  };
 
-    int best = 999;
-    for (int i = 0; i < 4; ++i) {
-      if (fromDir >= 0 && i == oppositeDir[fromDir]) continue;
-      int nx = x + flowDx[i], nz = z + flowDz[i];
-      if (!inBounds(nx, y, nz)) continue;
-      if (!canFlowInto(nx, y, nz)) continue;
-      int c = flowCost(nx, y, nz, dist + 1, i);
-      if (c < best) best = c;
+  auto flowCost = [&](int sx, int y, int sz) {
+    if (!inBounds(sx, y, sz) || !canFlowInto(sx, y, sz)) return 999;
+    if (hasDownwardExit(sx, y, sz)) return 0;
+
+    bool visited[flowSearchDiam][flowSearchDiam];
+    memset(visited, 0, sizeof(visited));
+
+    int qx[flowSearchCap];
+    int qz[flowSearchCap];
+    uint8_t qd[flowSearchCap];
+    int head = 0;
+    int tail = 0;
+
+    qx[tail] = sx;
+    qz[tail] = sz;
+    qd[tail] = 0;
+    tail++;
+    visited[flowSearchMax][flowSearchMax] = true;
+
+    while (head < tail) {
+      int cx = qx[head];
+      int cz = qz[head];
+      int cd = qd[head];
+      head++;
+      if (cd >= flowSearchMax) continue;
+
+      for (int i = 0; i < 4; ++i) {
+        int nx = cx + flowDx[i];
+        int nz = cz + flowDz[i];
+        int nd = cd + 1;
+
+        if (!inBounds(nx, y, nz) || !canFlowInto(nx, y, nz)) continue;
+
+        int rx = nx - sx + flowSearchMax;
+        int rz = nz - sz + flowSearchMax;
+        if (rx < 0 || rx >= flowSearchDiam || rz < 0 || rz >= flowSearchDiam) continue;
+        if (visited[rx][rz]) continue;
+        visited[rx][rz] = true;
+
+        if (hasDownwardExit(nx, y, nz)) return nd;
+        if (nd >= flowSearchMax) continue;
+
+        qx[tail] = nx;
+        qz[tail] = nz;
+        qd[tail] = (uint8_t)nd;
+        tail++;
+      }
     }
-    return best;
+    return 999;
   };
 
   for (int y = simMaxY; y >= simMinY && !budgetReached; --y) {
@@ -184,15 +217,14 @@ void Level::tickWater() {
             if (nd != 0xFF && nd < neighborMin) neighborMin = nd;
           }
         }
-        uint8_t belowId = getBlock(x, y - 1, z);
-        bool supportBelow = (y == 0) || g_blockProps[belowId].isSolid() || isWaterBlock(belowId);
-
+        uint8_t belowId = (y > 0) ? getBlock(x, y - 1, z) : BLOCK_BEDROCK;
+        bool solidSupportBelow = g_blockProps[belowId].isSolid();
         uint8_t nextDepth = curDepth;
         if (id == BLOCK_WATER_STILL) {
           nextDepth = 0;
         } else {
           if (hasWaterAbove) nextDepth = 1;
-          else if (sourceNeighbors >= 2 && supportBelow) nextDepth = 0;
+          else if (sourceNeighbors >= 2 && solidSupportBelow) nextDepth = 0;
           else if (neighborMin < 7) nextDepth = (uint8_t)(neighborMin + 1);
           else nextDepth = 8;
         }
@@ -200,31 +232,38 @@ void Level::tickWater() {
         if (nextDepth <= 7) {
           uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
           if (spreadDepth <= 7 && !flowedDown) {
-            bool useShortestPathPriority = isWaterBlock(id);
-            int costs[4] = {999, 999, 999, 999};
+            int dirCost[4] = {999, 999, 999, 999};
             int bestCost = 999;
-            bool canSpread[4] = {false, false, false, false};
             for (int i = 0; i < 4; ++i) {
               int nx = x + flowDx[i], nz = z + flowDz[i];
               if (!inBounds(nx, y, nz)) continue;
               if (!canFlowInto(nx, y, nz)) continue;
-              canSpread[i] = true;
-              if (useShortestPathPriority) {
-                costs[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCost(nx, y, nz, 1, i);
-              } else {
-                // Still/source blocks spread cheaply; avoid expensive recursive path search.
-                costs[i] = hasDownwardExit(nx, y, nz) ? 0 : 1;
-              }
-              if (costs[i] < bestCost) bestCost = costs[i];
+              dirCost[i] = flowCost(nx, y, nz);
+              if (dirCost[i] < bestCost) bestCost = dirCost[i];
             }
+            int enqueued = 0;
             for (int i = 0; i < 4; ++i) {
-              if (!canSpread[i]) continue;
-              if (bestCost != 999 && costs[i] != bestCost) continue;
               int nx = x + flowDx[i], nz = z + flowDz[i];
+              if (!inBounds(nx, y, nz)) continue;
+              if (!canFlowInto(nx, y, nz)) continue;
+              if (bestCost != 999 && dirCost[i] != bestCost) continue;
               uint8_t nId = getBlock(nx, y, nz);
               uint8_t nDepth = getWaterDepth(nx, y, nz);
               if (!isWaterBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
                 queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
+                enqueued++;
+              }
+            }
+            if (enqueued == 0 && bestCost != 999) {
+              for (int i = 0; i < 4; ++i) {
+                int nx = x + flowDx[i], nz = z + flowDz[i];
+                if (!inBounds(nx, y, nz)) continue;
+                if (!canFlowInto(nx, y, nz)) continue;
+                uint8_t nId = getBlock(nx, y, nz);
+                uint8_t nDepth = getWaterDepth(nx, y, nz);
+                if (!isWaterBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
+                  queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
+                }
               }
             }
           }
