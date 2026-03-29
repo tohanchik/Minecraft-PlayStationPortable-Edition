@@ -6,8 +6,8 @@
 
 class Random;
 
-// Ticks per day
-static const long long TICKS_PER_DAY = 24000LL;
+// Ticks per day (MCPE 0.6.1 uses 20 TPS * 60 * 16 = 19200)
+static const long long TICKS_PER_DAY = 19200LL;
 
 class Level {
 public:
