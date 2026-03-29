@@ -22,6 +22,7 @@
 #include "world/Mth.h"
 #include "world/Random.h"
 #include "world/Raycast.h"
+#include <ctype.h>
 #include <math.h>
 
 // PSP module metadata
@@ -74,6 +75,7 @@ static int g_inventorySel = 0;
 static int g_inventoryScroll = 0;
 static bool g_hotbarAssignMode = false;
 static int g_pendingInventoryItem = -1;
+static const char *g_inventoryHoverName = nullptr;
 static uint8_t g_hotbar[9] = {
   BLOCK_COBBLESTONE, BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD_PLANK, BLOCK_GLASS,
   BLOCK_SAND, BLOCK_LOG, BLOCK_LEAVES, BLOCK_WATER_STILL
@@ -137,7 +139,86 @@ static inline void hudGetIconTile(uint8_t id, int &tx, int &ty) {
   }
 }
 
+static const char* getBlockDisplayName(uint8_t id) {
+  switch (id) {
+    case BLOCK_STONE: return "Stone";
+    case BLOCK_GRASS: return "Grass";
+    case BLOCK_DIRT: return "Dirt";
+    case BLOCK_COBBLESTONE: return "Cobblestone";
+    case BLOCK_WOOD_PLANK: return "Wood Planks";
+    case BLOCK_SAND: return "Sand";
+    case BLOCK_GRAVEL: return "Gravel";
+    case BLOCK_LOG: return "Log";
+    case BLOCK_LEAVES: return "Leaves";
+    case BLOCK_GLASS: return "Glass";
+    case BLOCK_SANDSTONE: return "Sandstone";
+    case BLOCK_WOOL: return "Wool";
+    case BLOCK_GOLD_BLOCK: return "Gold Block";
+    case BLOCK_IRON_BLOCK: return "Iron Block";
+    case BLOCK_BRICK: return "Bricks";
+    case BLOCK_BOOKSHELF: return "Bookshelf";
+    case BLOCK_MOSSY_COBBLE: return "Mossy Cobblestone";
+    case BLOCK_OBSIDIAN: return "Obsidian";
+    case BLOCK_GLOWSTONE: return "Glowstone";
+    case BLOCK_PUMPKIN: return "Pumpkin";
+    case BLOCK_FLOWER: return "Dandelion";
+    case BLOCK_ROSE: return "Rose";
+    case BLOCK_SAPLING: return "Sapling";
+    case BLOCK_TALLGRASS: return "Tall Grass";
+    case BLOCK_WATER_STILL: return "Water";
+    case BLOCK_WATER_FLOW: return "Flowing Water";
+    default: return "Unknown Block";
+  }
+}
+
+static uint8_t glyphRow5x7(char ch, int row) {
+  switch (ch) {
+    case 'A': { static const uint8_t r[7] = {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}; return r[row]; }
+    case 'B': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}; return r[row]; }
+    case 'C': { static const uint8_t r[7] = {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E}; return r[row]; }
+    case 'D': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E}; return r[row]; }
+    case 'E': { static const uint8_t r[7] = {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}; return r[row]; }
+    case 'F': { static const uint8_t r[7] = {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}; return r[row]; }
+    case 'G': { static const uint8_t r[7] = {0x0E,0x11,0x10,0x17,0x11,0x11,0x0E}; return r[row]; }
+    case 'H': { static const uint8_t r[7] = {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}; return r[row]; }
+    case 'I': { static const uint8_t r[7] = {0x1F,0x04,0x04,0x04,0x04,0x04,0x1F}; return r[row]; }
+    case 'K': { static const uint8_t r[7] = {0x11,0x12,0x14,0x18,0x14,0x12,0x11}; return r[row]; }
+    case 'L': { static const uint8_t r[7] = {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}; return r[row]; }
+    case 'M': { static const uint8_t r[7] = {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}; return r[row]; }
+    case 'N': { static const uint8_t r[7] = {0x11,0x11,0x19,0x15,0x13,0x11,0x11}; return r[row]; }
+    case 'O': { static const uint8_t r[7] = {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}; return r[row]; }
+    case 'P': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}; return r[row]; }
+    case 'R': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}; return r[row]; }
+    case 'S': { static const uint8_t r[7] = {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}; return r[row]; }
+    case 'T': { static const uint8_t r[7] = {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}; return r[row]; }
+    case 'U': { static const uint8_t r[7] = {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}; return r[row]; }
+    case 'V': { static const uint8_t r[7] = {0x11,0x11,0x11,0x11,0x11,0x0A,0x04}; return r[row]; }
+    case 'W': { static const uint8_t r[7] = {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}; return r[row]; }
+    case 'Y': { static const uint8_t r[7] = {0x11,0x11,0x0A,0x04,0x04,0x04,0x04}; return r[row]; }
+    case ' ': return 0;
+    default: return 0;
+  }
+}
+
+static void hudDrawText5x7(float x, float y, const char *text, uint32_t color, float scale) {
+  if (!text) return;
+  float penX = x;
+  for (const char *p = text; *p; ++p) {
+    char ch = (char)toupper((unsigned char)(*p));
+    for (int row = 0; row < 7; ++row) {
+      uint8_t bits = glyphRow5x7(ch, row);
+      for (int col = 0; col < 5; ++col) {
+        if (bits & (1 << (4 - col))) {
+          hudDrawRect(penX + col * scale, y + row * scale, scale, scale, color);
+        }
+      }
+    }
+    penX += 6.0f * scale;
+  }
+}
+
 static void drawHotbarHUD() {
+  g_inventoryHoverName = nullptr;
   const float slot = 24.0f;
   const float pad = 3.0f;
   const float totalW = 9 * slot + 8 * pad;
@@ -194,6 +275,14 @@ static void drawHotbarHUD() {
       hudDrawTile(g_atlas, tx, ty, px, py, 24);
     }
 
+    if (g_inventorySel >= 0 && g_inventorySel < invCount) {
+      g_inventoryHoverName = getBlockDisplayName(g_inventoryItems[g_inventorySel]);
+      float nameX = panelX + 4.0f;
+      float nameY = panelY + panelH + 8.0f;
+      hudDrawRect(panelX - 2.0f, nameY - 2.0f, panelW + 4.0f, 14.0f, 0x90000000);
+      hudDrawText5x7(nameX, nameY, g_inventoryHoverName, 0xFFFFFFFF, 1.5f);
+    }
+
     // Scroll indicator
     int maxScroll = (invCount + cols - 1) / cols - rows;
     if (maxScroll < 0) maxScroll = 0;
@@ -211,6 +300,7 @@ static inline bool isWaterId(uint8_t id) {
 
 // Initialization
 static bool game_init() {
+  pspDebugScreenInit();
   // Overclock PSP to max for performance
   scePowerSetClockFrequency(333, 333, 166);
 
@@ -259,8 +349,16 @@ static bool game_init() {
 static void game_update(float dt) {
   PSPInput_Update();
   if (g_level) {
-    g_level->setSimulationFocus((int)floorf(g_player.x), (int)floorf(g_player.y), (int)floorf(g_player.z), 24);
-    g_level->tick();
+    static float s_levelTickAccum = 0.0f;
+    const float tickStep = 1.0f / 20.0f; // Minecraft-like 20 TPS
+    s_levelTickAccum += dt;
+    int ticks = 0;
+    while (s_levelTickAccum >= tickStep && ticks < 5) {
+      g_level->setSimulationFocus((int)floorf(g_player.x), (int)floorf(g_player.y), (int)floorf(g_player.z), 24);
+      g_level->tick();
+      s_levelTickAccum -= tickStep;
+      ticks++;
+    }
   }
 
   bool inWater = false;
@@ -469,7 +567,7 @@ static void game_update(float dt) {
   }
 
   // Place block
-  if (!g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_UP) && g_hitResult.hit) {
+  if (!g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && g_hitResult.hit) {
     int px = g_hitResult.nx;
     int py = g_hitResult.ny;
     int pz = g_hitResult.nz;
@@ -505,7 +603,9 @@ static void game_update(float dt) {
                      pz >= playerMinZ && pz <= playerMaxZ);
 
     uint8_t targetBlock = g_level->getBlock(px, py, pz);
-    bool canReplaceTarget = (targetBlock == BLOCK_AIR || (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
+    bool canReplaceTarget = (targetBlock == BLOCK_AIR ||
+                             isWaterId(targetBlock) ||
+                             (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
 
     if (canPlace && !overlaps && canReplaceTarget) {
       g_level->setBlock(px, py, pz, g_heldBlock);

@@ -11,5 +11,5 @@ void PSPRenderer_SetCamera(const ScePspFVector3 *eye,
 
 void PSPRenderer_GetViewProjMatrix(ScePspFMatrix4 *outVP);
 
-void PSPRenderer_EndFrame();
+void *PSPRenderer_EndFrame();
 void PSPRenderer_Shutdown();
