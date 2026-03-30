@@ -3,6 +3,7 @@
 #include "AABB.h"
 #include <math.h>
 #include <vector>
+#include <deque>
 
 class Random;
 
@@ -28,6 +29,8 @@ public:
   void setBlock(int wx, int wy, int wz, uint8_t id);
   uint8_t getWaterDepth(int wx, int wy, int wz) const;
   void setWaterDepth(int wx, int wy, int wz, uint8_t depth);
+  uint8_t getLavaDepth(int wx, int wy, int wz) const;
+  void setLavaDepth(int wx, int wy, int wz, uint8_t depth);
 
   uint8_t getSkyLight(int wx, int wy, int wz) const;
   uint8_t getBlockLight(int wx, int wy, int wz) const;
@@ -73,23 +76,40 @@ public:
 
 private:
   void tickWater();
+  void tickLava();
   bool isWaterBlock(uint8_t id) const;
+  bool isLavaBlock(uint8_t id) const;
   int waterIndex(int wx, int wy, int wz) const;
+  int lavaIndex(int wx, int wy, int wz) const;
+  void enqueueWaterCell(int wx, int wy, int wz, bool highPriority = false);
+  void enqueueLavaCell(int wx, int wy, int wz, bool highPriority = false);
 
   Chunk *m_chunks[WORLD_CHUNKS_X][WORLD_CHUNKS_Z];
   std::vector<uint8_t> m_waterDepth;
+  std::vector<uint8_t> m_lavaDepth;
   long long m_time = 6000LL;
   float m_lastSunBrightness = 1.0f;
   int m_waterTickAccum = 0;
+  int m_lavaTickAccum = 0;
   int m_simFocusX = -1;
   int m_simFocusY = -1;
   int m_simFocusZ = -1;
   int m_simFocusRadius = 24;
   int m_simFocusYRadius = 24;
   bool m_waterDirty = true;
+  bool m_lavaDirty = true;
   int m_waterWakeX = -1;
   int m_waterWakeY = -1;
   int m_waterWakeZ = -1;
-  int m_waterWakeRadius = 12;
+  int m_waterWakeRadius = 8;
   int m_waterWakeTicks = 0;
+  std::deque<int> m_waterQueue;
+  std::vector<uint8_t> m_waterQueued;
+  int m_lavaWakeX = -1;
+  int m_lavaWakeY = -1;
+  int m_lavaWakeZ = -1;
+  int m_lavaWakeRadius = 8;
+  int m_lavaWakeTicks = 0;
+  std::deque<int> m_lavaQueue;
+  std::vector<uint8_t> m_lavaQueued;
 };
