@@ -6,6 +6,7 @@
 #include <pspdisplay.h>
 #include <pspgu.h>
 #include <pspgum.h>
+#include <pspiofilemgr.h>
 #include <pspkernel.h>
 #include <psppower.h>
 
@@ -22,7 +23,11 @@
 #include "world/Mth.h"
 #include "world/Random.h"
 #include "world/Raycast.h"
+#include <ctype.h>
 #include <math.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 // PSP module metadata
 PSP_MODULE_INFO("MinecraftPSP", PSP_MODULE_USER, 1, 0);
@@ -74,6 +79,22 @@ static int g_inventorySel = 0;
 static int g_inventoryScroll = 0;
 static bool g_hotbarAssignMode = false;
 static int g_pendingInventoryItem = -1;
+static const char *g_inventoryHoverName = nullptr;
+static float g_tickAlpha = 0.0f;
+static const char *kWorldDir = "ms0:/PSP/GAME/MinecraftPSP/worlds";
+static const int kMaxWorldSlots = 8;
+static int g_worldSlot = 0;
+static bool g_worldExists[kMaxWorldSlots] = {false};
+static bool g_pauseOpen = false;
+static int g_pauseSel = 0; // 0 continue, 1 save, 2 save & exit
+static bool g_inMainMenu = true;
+static int g_menuSlotSel = 0;
+static bool g_menuCreateSelected = true;
+static bool g_menuDeleteConfirm = false;
+static bool g_menuDeleteYesSelected = false;
+static char g_statusText[96] = {0};
+static float g_statusTimer = 0.0f;
+static uint32_t g_statusColor = 0xFFFFFFFF;
 static uint8_t g_hotbar[9] = {
   BLOCK_COBBLESTONE, BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD_PLANK, BLOCK_GLASS,
   BLOCK_SAND, BLOCK_LOG, BLOCK_LEAVES, BLOCK_WATER_STILL
@@ -125,8 +146,14 @@ static inline void hudDrawTile(TextureAtlas *atlas, int tx, int ty, float x, flo
 }
 
 static inline void hudGetIconTile(uint8_t id, int &tx, int &ty) {
-  tx = g_blockUV[id].top_x;
-  ty = g_blockUV[id].top_y;
+  // Some blocks read better in inventory from side view.
+  if (id == BLOCK_LOG || id == BLOCK_BOOKSHELF || id == BLOCK_PUMPKIN) {
+    tx = g_blockUV[id].side_x;
+    ty = g_blockUV[id].side_y;
+  } else {
+    tx = g_blockUV[id].top_x;
+    ty = g_blockUV[id].top_y;
+  }
   if (tx == 0 && ty == 0 && id != BLOCK_GRASS) {
     tx = g_blockUV[id].side_x;
     ty = g_blockUV[id].side_y;
@@ -137,7 +164,88 @@ static inline void hudGetIconTile(uint8_t id, int &tx, int &ty) {
   }
 }
 
+static const char* getBlockDisplayName(uint8_t id) {
+  switch (id) {
+    case BLOCK_STONE: return "Stone";
+    case BLOCK_GRASS: return "Grass";
+    case BLOCK_DIRT: return "Dirt";
+    case BLOCK_COBBLESTONE: return "Cobblestone";
+    case BLOCK_WOOD_PLANK: return "Wood Planks";
+    case BLOCK_SAND: return "Sand";
+    case BLOCK_GRAVEL: return "Gravel";
+    case BLOCK_LOG: return "Log";
+    case BLOCK_LEAVES: return "Leaves";
+    case BLOCK_GLASS: return "Glass";
+    case BLOCK_SANDSTONE: return "Sandstone";
+    case BLOCK_WOOL: return "Wool";
+    case BLOCK_GOLD_BLOCK: return "Gold Block";
+    case BLOCK_IRON_BLOCK: return "Iron Block";
+    case BLOCK_BRICK: return "Bricks";
+    case BLOCK_BOOKSHELF: return "Bookshelf";
+    case BLOCK_MOSSY_COBBLE: return "Mossy Cobblestone";
+    case BLOCK_OBSIDIAN: return "Obsidian";
+    case BLOCK_GLOWSTONE: return "Glowstone";
+    case BLOCK_PUMPKIN: return "Pumpkin";
+    case BLOCK_FLOWER: return "Dandelion";
+    case BLOCK_ROSE: return "Rose";
+    case BLOCK_SAPLING: return "Sapling";
+    case BLOCK_TALLGRASS: return "Tall Grass";
+    case BLOCK_WATER_STILL: return "Water";
+    case BLOCK_WATER_FLOW: return "Flowing Water";
+    default: return "Unknown Block";
+  }
+}
+
+static uint8_t glyphRow5x7(char ch, int row) {
+  switch (ch) {
+    case 'A': { static const uint8_t r[7] = {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}; return r[row]; }
+    case 'B': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}; return r[row]; }
+    case 'C': { static const uint8_t r[7] = {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E}; return r[row]; }
+    case 'D': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E}; return r[row]; }
+    case 'E': { static const uint8_t r[7] = {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}; return r[row]; }
+    case 'F': { static const uint8_t r[7] = {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}; return r[row]; }
+    case 'G': { static const uint8_t r[7] = {0x0E,0x11,0x10,0x17,0x11,0x11,0x0E}; return r[row]; }
+    case 'H': { static const uint8_t r[7] = {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}; return r[row]; }
+    case 'I': { static const uint8_t r[7] = {0x1F,0x04,0x04,0x04,0x04,0x04,0x1F}; return r[row]; }
+    case 'K': { static const uint8_t r[7] = {0x11,0x12,0x14,0x18,0x14,0x12,0x11}; return r[row]; }
+    case 'L': { static const uint8_t r[7] = {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}; return r[row]; }
+    case 'M': { static const uint8_t r[7] = {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}; return r[row]; }
+    case 'N': { static const uint8_t r[7] = {0x11,0x11,0x19,0x15,0x13,0x11,0x11}; return r[row]; }
+    case 'O': { static const uint8_t r[7] = {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}; return r[row]; }
+    case 'P': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}; return r[row]; }
+    case 'Q': { static const uint8_t r[7] = {0x0E,0x11,0x11,0x11,0x15,0x12,0x0D}; return r[row]; }
+    case 'R': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}; return r[row]; }
+    case 'S': { static const uint8_t r[7] = {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}; return r[row]; }
+    case 'T': { static const uint8_t r[7] = {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}; return r[row]; }
+    case 'U': { static const uint8_t r[7] = {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}; return r[row]; }
+    case 'V': { static const uint8_t r[7] = {0x11,0x11,0x11,0x11,0x11,0x0A,0x04}; return r[row]; }
+    case 'W': { static const uint8_t r[7] = {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}; return r[row]; }
+    case 'X': { static const uint8_t r[7] = {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}; return r[row]; }
+    case 'Y': { static const uint8_t r[7] = {0x11,0x11,0x0A,0x04,0x04,0x04,0x04}; return r[row]; }
+    case ' ': return 0;
+    default: return 0;
+  }
+}
+
+static void hudDrawText5x7(float x, float y, const char *text, uint32_t color, float scale) {
+  if (!text) return;
+  float penX = x;
+  for (const char *p = text; *p; ++p) {
+    char ch = (char)toupper((unsigned char)(*p));
+    for (int row = 0; row < 7; ++row) {
+      uint8_t bits = glyphRow5x7(ch, row);
+      for (int col = 0; col < 5; ++col) {
+        if (bits & (1 << (4 - col))) {
+          hudDrawRect(penX + col * scale, y + row * scale, scale, scale, color);
+        }
+      }
+    }
+    penX += 6.0f * scale;
+  }
+}
+
 static void drawHotbarHUD() {
+  g_inventoryHoverName = nullptr;
   const float slot = 24.0f;
   const float pad = 3.0f;
   const float totalW = 9 * slot + 8 * pad;
@@ -194,6 +302,14 @@ static void drawHotbarHUD() {
       hudDrawTile(g_atlas, tx, ty, px, py, 24);
     }
 
+    if (g_inventorySel >= 0 && g_inventorySel < invCount) {
+      g_inventoryHoverName = getBlockDisplayName(g_inventoryItems[g_inventorySel]);
+      float nameX = panelX + 4.0f;
+      float nameY = panelY + panelH + 8.0f;
+      hudDrawRect(panelX - 2.0f, nameY - 2.0f, panelW + 4.0f, 14.0f, 0x90000000);
+      hudDrawText5x7(nameX, nameY, g_inventoryHoverName, 0xFFFFFFFF, 1.5f);
+    }
+
     // Scroll indicator
     int maxScroll = (invCount + cols - 1) / cols - rows;
     if (maxScroll < 0) maxScroll = 0;
@@ -209,8 +325,191 @@ static inline bool isWaterId(uint8_t id) {
   return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
 }
 
+static void worldPathForSlot(int slot, char *out, int outSize) {
+  if (!out || outSize <= 0) return;
+  snprintf(out, outSize, "%s/world%d.mcpw", kWorldDir, slot + 1);
+}
+
+static void resetPlayerStateForNewWorld() {
+  g_player.x = 8.0f;
+  g_player.y = 65.0f;
+  g_player.z = 8.0f;
+  g_player.yaw = 0.0f;
+  g_player.pitch = 0.0f;
+  g_player.velY = 0.0f;
+  g_player.onGround = false;
+  g_player.isFlying = false;
+  g_player.jumpDoubleTapTimer = 0.0f;
+}
+
+static bool worldFileExists(int slot) {
+  char path[128];
+  worldPathForSlot(slot, path, sizeof(path));
+  FILE *f = fopen(path, "rb");
+  if (!f) return false;
+  fclose(f);
+  return true;
+}
+
+static void worldMetaPathForSlot(int slot, char *out, int outSize) {
+  if (!out || outSize <= 0) return;
+  snprintf(out, outSize, "%s/world%d.meta", kWorldDir, slot + 1);
+}
+
+static void setStatusMessage(const char *msg, float seconds, uint32_t color = 0xFFFFFFFF) {
+  if (!msg) msg = "";
+  snprintf(g_statusText, sizeof(g_statusText), "%s", msg);
+  g_statusTimer = seconds;
+  g_statusColor = color;
+}
+
+static int firstExistingWorldSlot() {
+  for (int i = 0; i < kMaxWorldSlots; ++i) {
+    if (g_worldExists[i]) return i;
+  }
+  return -1;
+}
+
+static int nextEmptyWorldSlot() {
+  for (int i = 0; i < kMaxWorldSlots; ++i) {
+    if (!g_worldExists[i]) return i;
+  }
+  return -1;
+}
+
+static int findPrevExistingWorldSlot(int start) {
+  for (int i = start - 1; i >= 0; --i) {
+    if (g_worldExists[i]) return i;
+  }
+  return -1;
+}
+
+static int findNextExistingWorldSlot(int start) {
+  for (int i = start + 1; i < kMaxWorldSlots; ++i) {
+    if (g_worldExists[i]) return i;
+  }
+  return -1;
+}
+
+static bool savePlayerAndInventoryForSlot(int slot) {
+  char path[128];
+  worldMetaPathForSlot(slot, path, sizeof(path));
+  FILE *f = fopen(path, "wb");
+  if (!f) return false;
+
+  const char header[8] = {'M','C','P','S','P','M','E','T'};
+  if (fwrite(header, 1, sizeof(header), f) != sizeof(header) ||
+      fwrite(&g_player.x, sizeof(g_player.x), 1, f) != 1 ||
+      fwrite(&g_player.y, sizeof(g_player.y), 1, f) != 1 ||
+      fwrite(&g_player.z, sizeof(g_player.z), 1, f) != 1 ||
+      fwrite(&g_player.yaw, sizeof(g_player.yaw), 1, f) != 1 ||
+      fwrite(&g_player.pitch, sizeof(g_player.pitch), 1, f) != 1 ||
+      fwrite(&g_player.isFlying, sizeof(g_player.isFlying), 1, f) != 1 ||
+      fwrite(&g_hotbarSel, sizeof(g_hotbarSel), 1, f) != 1 ||
+      fwrite(g_hotbar, sizeof(g_hotbar[0]), 9, f) != 9) {
+    fclose(f);
+    return false;
+  }
+
+  fflush(f);
+  fclose(f);
+  return true;
+}
+
+static bool loadPlayerAndInventoryFromPath(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return false;
+
+  char header[8];
+  if (fread(header, 1, sizeof(header), f) != sizeof(header) ||
+      memcmp(header, "MCPSPMET", 8) != 0) {
+    fclose(f);
+    return false;
+  }
+
+  if (fread(&g_player.x, sizeof(g_player.x), 1, f) != 1 ||
+      fread(&g_player.y, sizeof(g_player.y), 1, f) != 1 ||
+      fread(&g_player.z, sizeof(g_player.z), 1, f) != 1 ||
+      fread(&g_player.yaw, sizeof(g_player.yaw), 1, f) != 1 ||
+      fread(&g_player.pitch, sizeof(g_player.pitch), 1, f) != 1 ||
+      fread(&g_player.isFlying, sizeof(g_player.isFlying), 1, f) != 1 ||
+      fread(&g_hotbarSel, sizeof(g_hotbarSel), 1, f) != 1 ||
+      fread(g_hotbar, sizeof(g_hotbar[0]), 9, f) != 9) {
+    fclose(f);
+    return false;
+  }
+
+  if (g_hotbarSel < 0 || g_hotbarSel > 8) g_hotbarSel = 0;
+  g_heldBlock = g_hotbar[g_hotbarSel];
+  fclose(f);
+  return true;
+}
+
+static bool loadPlayerAndInventoryForSlot(int slot) {
+  char path[128];
+  worldMetaPathForSlot(slot, path, sizeof(path));
+  return loadPlayerAndInventoryFromPath(path);
+}
+
+static bool saveWorldAndMetaForSlot(int slot) {
+  char path[128];
+  worldPathForSlot(slot, path, sizeof(path));
+  if (!g_level) return false;
+  if (!g_level->saveToFile(path)) return false;
+  return savePlayerAndInventoryForSlot(slot);
+}
+
+static void refreshWorldSlots() {
+  for (int i = 0; i < kMaxWorldSlots; ++i) g_worldExists[i] = worldFileExists(i);
+  int firstSlot = firstExistingWorldSlot();
+  if (firstSlot >= 0) {
+    if (!g_worldExists[g_menuSlotSel]) g_menuSlotSel = firstSlot;
+    if (g_menuCreateSelected && !g_menuDeleteConfirm) g_menuCreateSelected = false;
+  } else {
+    g_menuCreateSelected = true;
+  }
+}
+
+static bool loadWorldSlot(int slot) {
+  char path[128];
+  worldPathForSlot(slot, path, sizeof(path));
+  if (!g_level) return false;
+  bool loadedMain = g_level->loadFromFile(path);
+  if (!loadedMain) return false;
+  if (!loadPlayerAndInventoryForSlot(slot)) {
+    setStatusMessage("Loaded world (meta missing/corrupt)", 3.0f, 0xFF70B0FF);
+  }
+  g_worldSlot = slot;
+  return true;
+}
+
+static void createWorldSlot(int slot) {
+  if (!g_level) return;
+  resetPlayerStateForNewWorld();
+  uint64_t t = sceKernelGetSystemTimeWide();
+  Random rng((int64_t)t ^ ((int64_t)slot * 341873128712LL));
+  g_level->generate(&rng);
+  if (!saveWorldAndMetaForSlot(slot)) {
+    setStatusMessage("Create world failed", 3.0f, 0xFF6060FF);
+    return;
+  }
+  setStatusMessage("World created", 2.0f, 0xFF80FF80);
+  g_worldSlot = slot;
+  refreshWorldSlots();
+}
+
+static void deleteWorldSlot(int slot) {
+  char path[128];
+  worldPathForSlot(slot, path, sizeof(path));
+  sceIoRemove(path);
+  worldMetaPathForSlot(slot, path, sizeof(path));
+  sceIoRemove(path);
+  refreshWorldSlots();
+}
+
 // Initialization
 static bool game_init() {
+  pspDebugScreenInit();
   // Overclock PSP to max for performance
   scePowerSetClockFrequency(333, 333, 166);
 
@@ -237,20 +536,13 @@ static bool game_init() {
   g_chunkRenderer = new ChunkRenderer(g_atlas);
   g_chunkRenderer->setLevel(g_level);
 
-  // Generate a test world
-  Random rng(12345LL);
-  g_level->generate(&rng);
+  // Load existing world or generate a new one.
+  sceIoMkdir("ms0:/PSP/GAME/MinecraftPSP", 0777);
+  sceIoMkdir(kWorldDir, 0777);
+  refreshWorldSlots();
 
   // Player start position
-  g_player.x = 8.0f;
-  g_player.y = 65.0f;
-  g_player.z = 8.0f;
-  g_player.yaw = 0.0f;
-  g_player.pitch = 0.0f;
-  g_player.velY = 0.0f;
-  g_player.onGround = false;
-  g_player.isFlying = false;
-  g_player.jumpDoubleTapTimer = 0.0f;
+  resetPlayerStateForNewWorld();
   g_heldBlock = g_hotbar[g_hotbarSel];
   return true;
 }
@@ -258,9 +550,125 @@ static bool game_init() {
 // Game loop update
 static void game_update(float dt) {
   PSPInput_Update();
+  if (g_statusTimer > 0.0f) {
+    g_statusTimer -= dt;
+    if (g_statusTimer <= 0.0f) g_statusText[0] = '\0';
+  }
+
+  if (g_inMainMenu) {
+    if (g_menuDeleteConfirm) {
+      if (PSPInput_JustPressed(PSP_CTRL_LEFT) || PSPInput_JustPressed(PSP_CTRL_RIGHT) ||
+          PSPInput_JustPressed(PSP_CTRL_UP) || PSPInput_JustPressed(PSP_CTRL_DOWN)) {
+        g_menuDeleteYesSelected = !g_menuDeleteYesSelected;
+      }
+      if (PSPInput_JustPressed(PSP_CTRL_CIRCLE)) {
+        g_menuDeleteConfirm = false;
+        g_menuDeleteYesSelected = false;
+      } else if (PSPInput_JustPressed(PSP_CTRL_CROSS)) {
+        if (g_menuDeleteYesSelected && g_worldExists[g_menuSlotSel]) {
+          deleteWorldSlot(g_menuSlotSel);
+          setStatusMessage("World deleted", 2.0f, 0xFF80FF80);
+          int firstSlot = firstExistingWorldSlot();
+          if (firstSlot >= 0) {
+            g_menuSlotSel = firstSlot;
+            g_menuCreateSelected = false;
+          } else {
+            g_menuCreateSelected = true;
+          }
+        }
+        g_menuDeleteConfirm = false;
+        g_menuDeleteYesSelected = false;
+      }
+      return;
+    }
+
+    if (PSPInput_JustPressed(PSP_CTRL_UP)) {
+      if (!g_menuCreateSelected) {
+        int prevSlot = findPrevExistingWorldSlot(g_menuSlotSel);
+        if (prevSlot >= 0) g_menuSlotSel = prevSlot;
+        else g_menuCreateSelected = true;
+      }
+    }
+    if (PSPInput_JustPressed(PSP_CTRL_DOWN)) {
+      if (g_menuCreateSelected) {
+        int firstSlot = firstExistingWorldSlot();
+        if (firstSlot >= 0) {
+          g_menuSlotSel = firstSlot;
+          g_menuCreateSelected = false;
+        }
+      } else {
+        int nextSlot = findNextExistingWorldSlot(g_menuSlotSel);
+        if (nextSlot >= 0) g_menuSlotSel = nextSlot;
+      }
+    }
+
+    if (PSPInput_JustPressed(PSP_CTRL_CROSS)) {
+      if (g_menuCreateSelected) {
+        int emptySlot = nextEmptyWorldSlot();
+        if (emptySlot >= 0) {
+          createWorldSlot(emptySlot);
+          g_menuSlotSel = emptySlot;
+          g_menuCreateSelected = false;
+          if (g_worldExists[emptySlot]) g_inMainMenu = false;
+        } else {
+          setStatusMessage("No free world slots", 2.5f, 0xFF60A0FF);
+        }
+      } else if (g_worldExists[g_menuSlotSel] && loadWorldSlot(g_menuSlotSel)) {
+        if (g_statusTimer <= 0.0f) setStatusMessage("World loaded", 2.0f, 0xFF80FF80);
+        g_inMainMenu = false;
+      } else if (!g_menuCreateSelected) {
+        setStatusMessage("Load failed", 3.0f, 0xFF6060FF);
+      }
+    }
+
+    if (!g_menuCreateSelected && g_worldExists[g_menuSlotSel] &&
+        PSPInput_JustPressed(PSP_CTRL_TRIANGLE)) {
+      g_menuDeleteConfirm = true;
+      g_menuDeleteYesSelected = false; // default: NO
+    }
+    return;
+  }
+
+  if (PSPInput_JustPressed(PSP_CTRL_START) && !g_pauseOpen) {
+    g_pauseOpen = true;
+    g_pauseSel = 0;
+  } else if (g_pauseOpen) {
+    if (PSPInput_JustPressed(PSP_CTRL_UP)) g_pauseSel = (g_pauseSel + 2) % 3;
+    if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_pauseSel = (g_pauseSel + 1) % 3;
+    if (PSPInput_JustPressed(PSP_CTRL_CIRCLE)) g_pauseOpen = false;
+    if (PSPInput_JustPressed(PSP_CTRL_CROSS)) {
+      if (g_pauseSel == 0) {
+        g_pauseOpen = false;
+      } else if (g_pauseSel == 1) {
+        if (saveWorldAndMetaForSlot(g_worldSlot)) setStatusMessage("Game saved", 2.0f, 0xFF80FF80);
+        else setStatusMessage("Save failed", 3.0f, 0xFF6060FF);
+        g_pauseOpen = false;
+      } else {
+        if (saveWorldAndMetaForSlot(g_worldSlot)) setStatusMessage("Saved and exited", 2.5f, 0xFF80FF80);
+        else setStatusMessage("Save failed", 3.0f, 0xFF6060FF);
+        refreshWorldSlots();
+        g_inMainMenu = true;
+        g_pauseOpen = false;
+      }
+    }
+    return;
+  }
+
   if (g_level) {
-    g_level->setSimulationFocus((int)floorf(g_player.x), (int)floorf(g_player.y), (int)floorf(g_player.z), 24);
-    g_level->tick();
+    static float s_levelTickAccum = 0.0f;
+    const float tickStep = 1.0f / 20.0f; // Minecraft-like 20 TPS
+    s_levelTickAccum += dt;
+    int ticks = 0;
+    while (s_levelTickAccum >= tickStep && ticks < 5) {
+      g_level->setSimulationFocus((int)floorf(g_player.x), (int)floorf(g_player.y), (int)floorf(g_player.z), 24);
+      g_level->tick();
+      s_levelTickAccum -= tickStep;
+      ticks++;
+    }
+    g_tickAlpha = s_levelTickAccum / tickStep;
+    if (g_tickAlpha < 0.0f) g_tickAlpha = 0.0f;
+    if (g_tickAlpha > 1.0f) g_tickAlpha = 1.0f;
+
   }
 
   bool inWater = false;
@@ -469,7 +877,7 @@ static void game_update(float dt) {
   }
 
   // Place block
-  if (!g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_UP) && g_hitResult.hit) {
+  if (!g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && g_hitResult.hit) {
     int px = g_hitResult.nx;
     int py = g_hitResult.ny;
     int pz = g_hitResult.nz;
@@ -505,7 +913,9 @@ static void game_update(float dt) {
                      pz >= playerMinZ && pz <= playerMaxZ);
 
     uint8_t targetBlock = g_level->getBlock(px, py, pz);
-    bool canReplaceTarget = (targetBlock == BLOCK_AIR || (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
+    bool canReplaceTarget = (targetBlock == BLOCK_AIR ||
+                             isWaterId(targetBlock) ||
+                             (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
 
     if (canPlace && !overlaps && canReplaceTarget) {
       g_level->setBlock(px, py, pz, g_heldBlock);
@@ -516,6 +926,49 @@ static void game_update(float dt) {
 }
 
 static void game_render() {
+  if (g_inMainMenu) {
+    PSPRenderer_BeginFrame(0xFF101018);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_CULL_FACE);
+    sceGuEnable(GU_BLEND);
+    sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+
+    hudDrawText5x7(82.0f, 20.0f, "MINECRAFT PSP - WORLDS", 0xFFFFFFFF, 1.6f);
+    hudDrawRect(152.0f, 44.0f, 176.0f, 24.0f, g_menuCreateSelected ? 0xA0606060 : 0x80353535);
+    hudDrawText5x7(165.0f, 52.0f, "CREATE WORLD (X)", 0xFFFFFFFF, 1.2f);
+
+    for (int i = 0; i < kMaxWorldSlots; ++i) {
+      if (!g_worldExists[i]) continue;
+      float y = 70.0f + i * 20.0f;
+      if (!g_menuCreateSelected && i == g_menuSlotSel) hudDrawRect(12.0f, y - 2.0f, 188.0f, 16.0f, 0xA0606060);
+      char line[64];
+      snprintf(line, sizeof(line), "WORLD%d", i + 1);
+      hudDrawText5x7(20.0f, y, line, 0xFFFFFFFF, 1.5f);
+    }
+    hudDrawText5x7(208.0f, 88.0f, "X ENTER", 0xFFC0C0C0, 1.2f);
+    hudDrawText5x7(208.0f, 104.0f, "TRIANGLE DELETE", 0xFFC0C0C0, 1.2f);
+    hudDrawText5x7(208.0f, 120.0f, "UP/DOWN SELECT", 0xFFC0C0C0, 1.2f);
+
+    if (g_menuDeleteConfirm) {
+      hudDrawRect(110.0f, 90.0f, 260.0f, 90.0f, 0xC0000000);
+      hudDrawText5x7(128.0f, 104.0f, "DELETE WORLD?", 0xFFFFFFFF, 1.8f);
+      hudDrawRect(150.0f, 138.0f, 70.0f, 20.0f, g_menuDeleteYesSelected ? 0xA0606060 : 0x80404040);
+      hudDrawRect(260.0f, 138.0f, 70.0f, 20.0f, !g_menuDeleteYesSelected ? 0xA0606060 : 0x80404040);
+      hudDrawText5x7(176.0f, 145.0f, "YES", 0xFFFFFFFF, 1.2f);
+      hudDrawText5x7(288.0f, 145.0f, "NO", 0xFFFFFFFF, 1.2f);
+    }
+    if (g_statusTimer > 0.0f && g_statusText[0]) {
+      hudDrawRect(92.0f, 236.0f, 296.0f, 16.0f, 0xA0000000);
+      hudDrawText5x7(100.0f, 240.0f, g_statusText, g_statusColor, 1.1f);
+    }
+
+    sceGuDisable(GU_BLEND);
+    sceGuEnable(GU_CULL_FACE);
+    sceGuEnable(GU_DEPTH_TEST);
+    PSPRenderer_EndFrame();
+    return;
+  }
+
   float _tod = g_level->getTimeOfDay();
 
   // Camera setup
@@ -564,7 +1017,7 @@ static void game_render() {
   }
 
   if (g_cloudRenderer)
-    g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, 0.0f);
+    g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, g_tickAlpha);
 
   // 2D HUD pass
   sceGuDisable(GU_DEPTH_TEST);
@@ -572,6 +1025,20 @@ static void game_render() {
   sceGuEnable(GU_BLEND);
   sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
   drawHotbarHUD();
+  if (g_pauseOpen) {
+    hudDrawRect(110.0f, 64.0f, 260.0f, 140.0f, 0xB0000000);
+    hudDrawText5x7(180.0f, 88.0f, "PAUSE", 0xFFFFFFFF, 2.0f);
+    float optionY = (g_pauseSel == 0) ? 114.0f : (g_pauseSel == 1 ? 138.0f : 162.0f);
+    hudDrawRect(132.0f, optionY, 216.0f, 18.0f, 0x80505050);
+    hudDrawText5x7(164.0f, 122.0f, "CONTINUE", 0xFFFFFFFF, 1.5f);
+    hudDrawText5x7(164.0f, 148.0f, "SAVE GAME", 0xFFFFFFFF, 1.5f);
+    hudDrawText5x7(164.0f, 172.0f, "SAVE AND EXIT", 0xFFFFFFFF, 1.5f);
+    hudDrawText5x7(130.0f, 190.0f, "X SELECT  O BACK", 0xFFC0C0C0, 1.2f);
+  }
+  if (g_statusTimer > 0.0f && g_statusText[0]) {
+    hudDrawRect(120.0f, 12.0f, 240.0f, 16.0f, 0xA0000000);
+    hudDrawText5x7(128.0f, 16.0f, g_statusText, g_statusColor, 1.1f);
+  }
   sceGuDisable(GU_BLEND);
   sceGuEnable(GU_CULL_FACE);
   sceGuEnable(GU_DEPTH_TEST);
