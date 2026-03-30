@@ -28,6 +28,16 @@ make
 ```
 4. Copy the resulting `EBOOT.PBP` alongside the `res` folder to your PSP (`ms0:/PSP/GAME/MinecraftPSP/`).
 
+### Creative Inventory GUI texture paths
+For the creative inventory screen, place these files in the `res/gui/` folder:
+
+- `res/gui/inventory_creative.png`
+- `res/gui/cursor.png`
+- `res/gui/slider.png`
+- `res/gui/cell.png`
+
+The game will load these files at startup and use them for creative inventory UI elements if present.
+
 ## Contribute
 **We need your help!** 
 Are you a C++ developer? Do you know MIPS, PSP GU hardware programming, or just want to help with math, physics, or rendering? 
