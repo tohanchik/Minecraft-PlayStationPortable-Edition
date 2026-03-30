@@ -475,6 +475,10 @@ static inline bool isWaterId(uint8_t id) {
   return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
 }
 
+static inline bool isLavaId(uint8_t id) {
+  return id == BLOCK_LAVA_STILL || id == BLOCK_LAVA_FLOW;
+}
+
 static void worldPathForSlot(int slot, char *out, int outSize) {
   if (!out || outSize <= 0) return;
   snprintf(out, outSize, "%s/world%d.mcpw", kWorldDir, slot + 1);
@@ -1214,6 +1218,7 @@ static void game_update(float dt) {
     uint8_t targetBlock = g_level->getBlock(px, py, pz);
     bool canReplaceTarget = (targetBlock == BLOCK_AIR ||
                              isWaterId(targetBlock) ||
+                             isLavaId(targetBlock) ||
                              (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
 
     if (canPlace && !overlaps && canReplaceTarget) {
