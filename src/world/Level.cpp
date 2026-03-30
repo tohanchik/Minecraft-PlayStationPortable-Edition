@@ -5,6 +5,8 @@
 #include <vector>
 #include <functional>
 #include <string.h>
+#include <stdio.h>
+#include <stdint.h>
 
 struct LightNode {
   int x, y, z;
@@ -186,7 +188,6 @@ void Level::tickWater() {
         }
         uint8_t belowId = getBlock(x, y - 1, z);
         bool supportBelow = (y == 0) || g_blockProps[belowId].isSolid() || isWaterBlock(belowId);
-
         uint8_t nextDepth = curDepth;
         if (id == BLOCK_WATER_STILL) {
           nextDepth = 0;
@@ -422,6 +423,94 @@ void Level::setBlockLight(int wx, int wy, int wz, uint8_t val) {
   if (cx < 0 || cx >= WORLD_CHUNKS_X || cz < 0 || cz >= WORLD_CHUNKS_Z || wy < 0 || wy >= CHUNK_SIZE_Y) return;
   uint8_t curSky = m_chunks[cx][cz]->getSkyLight(wx & 0xF, wy, wz & 0xF);
   m_chunks[cx][cz]->setLight(wx & 0xF, wy, wz & 0xF, curSky, val);
+}
+
+bool Level::saveToFile(const char *path) const {
+  if (!path) return false;
+  FILE *f = fopen(path, "wb");
+  if (!f) return false;
+
+  struct SaveHeader {
+    char magic[8];
+    uint32_t version;
+    uint32_t chunksX;
+    uint32_t chunksZ;
+    uint32_t chunkY;
+    int64_t time;
+    uint32_t waterSize;
+  } hdr;
+
+  memcpy(hdr.magic, "MCPSPWLD", 8);
+  hdr.version = 1;
+  hdr.chunksX = WORLD_CHUNKS_X;
+  hdr.chunksZ = WORLD_CHUNKS_Z;
+  hdr.chunkY = CHUNK_SIZE_Y;
+  hdr.time = m_time;
+  hdr.waterSize = (uint32_t)m_waterDepth.size();
+
+  if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
+
+  for (int cx = 0; cx < WORLD_CHUNKS_X; ++cx) {
+    for (int cz = 0; cz < WORLD_CHUNKS_Z; ++cz) {
+      const Chunk *ch = m_chunks[cx][cz];
+      if (fwrite(ch->blocks, sizeof(ch->blocks), 1, f) != 1) { fclose(f); return false; }
+      if (fwrite(ch->light, sizeof(ch->light), 1, f) != 1) { fclose(f); return false; }
+    }
+  }
+
+  if (!m_waterDepth.empty()) {
+    if (fwrite(m_waterDepth.data(), 1, m_waterDepth.size(), f) != m_waterDepth.size()) {
+      fclose(f);
+      return false;
+    }
+  }
+
+  fclose(f);
+  return true;
+}
+
+bool Level::loadFromFile(const char *path) {
+  if (!path) return false;
+  FILE *f = fopen(path, "rb");
+  if (!f) return false;
+
+  struct SaveHeader {
+    char magic[8];
+    uint32_t version;
+    uint32_t chunksX;
+    uint32_t chunksZ;
+    uint32_t chunkY;
+    int64_t time;
+    uint32_t waterSize;
+  } hdr;
+
+  if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
+  if (memcmp(hdr.magic, "MCPSPWLD", 8) != 0 || hdr.version != 1) { fclose(f); return false; }
+  if (hdr.chunksX != WORLD_CHUNKS_X || hdr.chunksZ != WORLD_CHUNKS_Z || hdr.chunkY != CHUNK_SIZE_Y) { fclose(f); return false; }
+  if (hdr.waterSize != m_waterDepth.size()) { fclose(f); return false; }
+
+  for (int cx = 0; cx < WORLD_CHUNKS_X; ++cx) {
+    for (int cz = 0; cz < WORLD_CHUNKS_Z; ++cz) {
+      Chunk *ch = m_chunks[cx][cz];
+      ch->cx = cx;
+      ch->cz = cz;
+      if (fread(ch->blocks, sizeof(ch->blocks), 1, f) != 1) { fclose(f); return false; }
+      if (fread(ch->light, sizeof(ch->light), 1, f) != 1) { fclose(f); return false; }
+      for (int sy = 0; sy < 4; ++sy) ch->dirty[sy] = true;
+    }
+  }
+
+  if (!m_waterDepth.empty()) {
+    if (fread(m_waterDepth.data(), 1, m_waterDepth.size(), f) != m_waterDepth.size()) {
+      fclose(f);
+      return false;
+    }
+  }
+
+  fclose(f);
+  m_time = hdr.time;
+  m_waterDirty = true;
+  return true;
 }
 
 void Level::generate(Random *rng) {
