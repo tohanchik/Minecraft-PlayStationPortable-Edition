@@ -4,6 +4,7 @@
 #include "TreeFeature.h"
 #include <vector>
 #include <functional>
+#include <unordered_map>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -16,6 +17,10 @@ bool Level::isWaterBlock(uint8_t id) const {
   return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
 }
 
+bool Level::isLavaBlock(uint8_t id) const {
+  return id == BLOCK_LAVA_STILL || id == BLOCK_LAVA_FLOW;
+}
+
 void Level::setSimulationFocus(int wx, int wy, int wz, int radius) {
   m_simFocusX = wx;
   m_simFocusY = wy;
@@ -25,13 +30,16 @@ void Level::setSimulationFocus(int wx, int wy, int wz, int radius) {
 
 void Level::tick() {
   m_time += 1;
-  if (!m_waterDirty) return;
-
   // MCPE-like liquid logic is expensive; run every few world ticks.
-  if (++m_waterTickAccum >= 6) {
+  if (m_waterDirty && ++m_waterTickAccum >= 5) {
     m_waterTickAccum = 0;
     tickWater();
     if (m_waterWakeTicks > 0) m_waterWakeTicks--;
+  }
+  if (m_lavaDirty && ++m_lavaTickAccum >= 30) {
+    m_lavaTickAccum = 0;
+    tickLava();
+    if (m_lavaWakeTicks > 0) m_lavaWakeTicks--;
   }
 }
 
@@ -45,7 +53,9 @@ void Level::tickWater() {
   };
   std::vector<WaterOp> ops;
   ops.reserve(8192);
-  const int maxWaterCellsPerTick = 2048;
+  std::unordered_map<int, size_t> opIndex;
+  opIndex.reserve(4096);
+  const int maxWaterCellsPerTick = 768;
   int processedWaterCells = 0;
   bool budgetReached = false;
 
@@ -93,10 +103,25 @@ void Level::tickWater() {
 
   auto queueSet = [&](int x, int y, int z, uint8_t id, uint8_t depth) {
     if (!inBounds(x, y, z)) return;
+    int key = ((y * maxZ + z) * maxX + x);
+    auto it = opIndex.find(key);
+    if (it != opIndex.end()) {
+      WaterOp &pending = ops[it->second];
+      if (pending.id == id && pending.depth == depth) return;
+      pending.id = id;
+      pending.depth = depth;
+      return;
+    }
     uint8_t cur = getBlock(x, y, z);
     uint8_t curDepth = getWaterDepth(x, y, z);
     if (cur == id && curDepth == depth) return;
+    opIndex[key] = ops.size();
     ops.push_back({x, y, z, id, depth});
+  };
+
+  auto waterReactionBlock = [&](uint8_t lavaId, uint8_t lavaDepth) -> uint8_t {
+    if (lavaId == BLOCK_LAVA_STILL || lavaDepth == 0) return BLOCK_OBSIDIAN;
+    return BLOCK_COBBLESTONE;
   };
 
   auto canFlowInto = [&](int x, int y, int z) {
@@ -104,6 +129,7 @@ void Level::tickWater() {
     uint8_t t = getBlock(x, y, z);
     if (t == BLOCK_AIR) return true;
     if (isWaterBlock(t)) return true;
+    if (isLavaBlock(t)) return false;
     return !g_blockProps[t].isSolid();
   };
 
@@ -115,7 +141,7 @@ void Level::tickWater() {
   static const int flowDx[4] = {-1, 1, 0, 0};
   static const int flowDz[4] = {0, 0, -1, 1};
   static const int oppositeDir[4] = {1, 0, 3, 2};
-  const int maxFlowSearch = 7;
+  const int maxFlowSearch = 4;
 
   std::function<int(int, int, int, int, int)> flowCost =
       [&](int x, int y, int z, int dist, int fromDir) -> int {
@@ -161,6 +187,24 @@ void Level::tickWater() {
 
         if (id == BLOCK_WATER_STILL) curDepth = 0;
 
+        // Real-contact water->lava reaction (no path-check side effects):
+        // Water touching lava cools lava into obsidian/cobblestone.
+        // Exception: flowing lava directly above water is handled by lava tick
+        // as "water below lava flow -> stone", so skip that direction here.
+        static const int rx[6] = {-1, 1, 0, 0, 0, 0};
+        static const int ry[6] = {0, 0, -1, 1, 0, 0};
+        static const int rz[6] = {0, 0, 0, 0, -1, 1};
+        for (int i = 0; i < 6; ++i) {
+          int nx = x + rx[i], ny = y + ry[i], nz = z + rz[i];
+          if (!inBounds(nx, ny, nz)) continue;
+          uint8_t neighbor = getBlock(nx, ny, nz);
+          if (!isLavaBlock(neighbor)) continue;
+          if (ny == y + 1 && neighbor == BLOCK_LAVA_FLOW) continue;
+          uint8_t lavaDepth = getLavaDepth(nx, ny, nz);
+          if (lavaDepth == 0xFF) lavaDepth = (neighbor == BLOCK_LAVA_STILL) ? 0 : 1;
+          queueSet(nx, ny, nz, waterReactionBlock(neighbor, lavaDepth), 0xFF);
+        }
+
         // Prefer downward flow.
         int by = y - 1;
         bool flowedDown = false;
@@ -201,7 +245,7 @@ void Level::tickWater() {
         if (nextDepth <= 7) {
           uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
           if (spreadDepth <= 7 && !flowedDown) {
-            bool useShortestPathPriority = isWaterBlock(id);
+            bool useShortestPathPriority = true;
             int costs[4] = {999, 999, 999, 999};
             int bestCost = 999;
             bool canSpread[4] = {false, false, false, false};
@@ -256,13 +300,243 @@ void Level::tickWater() {
       markDirty(op.x, op.y, op.z);
     }
     setWaterDepth(op.x, op.y, op.z, op.depth);
+    if (isLavaBlock(op.id)) setLavaDepth(op.x, op.y, op.z, (op.id == BLOCK_LAVA_STILL) ? 0 : 1);
+    else setLavaDepth(op.x, op.y, op.z, 0xFF);
+    if (isLavaBlock(cur) || isLavaBlock(op.id)) {
+      m_lavaDirty = true;
+      m_lavaWakeX = op.x;
+      m_lavaWakeY = op.y;
+      m_lavaWakeZ = op.z;
+      m_lavaWakeTicks = 24;
+    }
   }
   m_waterDirty = !ops.empty();
+}
+
+void Level::tickLava() {
+  struct LavaOp {
+    int x, y, z;
+    uint8_t id;
+    uint8_t depth;
+  };
+  std::vector<LavaOp> ops;
+  ops.reserve(2048);
+  std::unordered_map<int, size_t> opIndex;
+  opIndex.reserve(2048);
+  const int maxLavaCellsPerTick = 256;
+  int processedLavaCells = 0;
+  bool budgetReached = false;
+
+  const int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  const int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  int simMinY = 0;
+  int simMaxY = CHUNK_SIZE_Y - 1;
+  int simMinX = 0;
+  int simMaxX = maxX - 1;
+  int simMinZ = 0;
+  int simMaxZ = maxZ - 1;
+  int focusX = m_simFocusX;
+  int focusY = m_simFocusY;
+  int focusZ = m_simFocusZ;
+  int focusRadius = m_simFocusRadius;
+  int focusYRadius = m_simFocusYRadius;
+  if (m_lavaWakeTicks > 0 && m_lavaWakeX >= 0 && m_lavaWakeZ >= 0) {
+    focusX = m_lavaWakeX;
+    focusY = m_lavaWakeY;
+    focusZ = m_lavaWakeZ;
+    focusRadius = m_lavaWakeRadius;
+    focusYRadius = m_lavaWakeRadius;
+  }
+
+  if (focusX >= 0 && focusZ >= 0 && focusRadius > 0) {
+    simMinX = focusX - focusRadius;
+    simMaxX = focusX + focusRadius;
+    simMinZ = focusZ - focusRadius;
+    simMaxZ = focusZ + focusRadius;
+    if (simMinX < 0) simMinX = 0;
+    if (simMinZ < 0) simMinZ = 0;
+    if (simMaxX >= maxX) simMaxX = maxX - 1;
+    if (simMaxZ >= maxZ) simMaxZ = maxZ - 1;
+  }
+  if (focusY >= 0) {
+    simMinY = focusY - focusYRadius;
+    simMaxY = focusY + focusYRadius;
+    if (simMinY < 0) simMinY = 0;
+    if (simMaxY >= CHUNK_SIZE_Y) simMaxY = CHUNK_SIZE_Y - 1;
+  }
+
+  auto inBounds = [&](int x, int y, int z) {
+    return x >= 0 && x < maxX && z >= 0 && z < maxZ && y >= 0 && y < CHUNK_SIZE_Y;
+  };
+
+  auto queueSet = [&](int x, int y, int z, uint8_t id, uint8_t depth) {
+    if (!inBounds(x, y, z)) return;
+    int key = ((y * maxZ + z) * maxX + x);
+    auto it = opIndex.find(key);
+    if (it != opIndex.end()) {
+      LavaOp &pending = ops[it->second];
+      if (pending.id == id && pending.depth == depth) return;
+      pending.id = id;
+      pending.depth = depth;
+      return;
+    }
+    uint8_t cur = getBlock(x, y, z);
+    uint8_t curDepth = getLavaDepth(x, y, z);
+    if (cur == id && curDepth == depth) return;
+    opIndex[key] = ops.size();
+    ops.push_back({x, y, z, id, depth});
+  };
+
+  auto waterReactionBlock = [&](uint8_t lavaId, uint8_t lavaDepth) -> uint8_t {
+    if (lavaId == BLOCK_LAVA_STILL || lavaDepth == 0) return BLOCK_OBSIDIAN;
+    return BLOCK_COBBLESTONE;
+  };
+
+  auto canFlowInto = [&](int x, int y, int z) {
+    if (!inBounds(x, y, z)) return false;
+    uint8_t t = getBlock(x, y, z);
+    if (t == BLOCK_AIR) return true;
+    if (isLavaBlock(t)) return true;
+    if (isWaterBlock(t)) return false;
+    return !g_blockProps[t].isSolid();
+  };
+
+  static const int flowDx[4] = {-1, 1, 0, 0};
+  static const int flowDz[4] = {0, 0, -1, 1};
+
+  for (int y = simMaxY; y >= simMinY && !budgetReached; --y) {
+    for (int z = simMinZ; z <= simMaxZ; ++z) {
+      for (int x = simMinX; x <= simMaxX; ++x) {
+        uint8_t id = getBlock(x, y, z);
+        if (!isLavaBlock(id)) continue;
+        if (++processedLavaCells > maxLavaCellsPerTick) {
+          budgetReached = true;
+          break;
+        }
+
+        uint8_t curDepth = getLavaDepth(x, y, z);
+        if (curDepth == 0xFF) curDepth = (id == BLOCK_LAVA_STILL) ? 0 : 1;
+        if (id == BLOCK_LAVA_STILL) curDepth = 0;
+
+        bool cooled = false;
+        static const int rx[6] = {-1, 1, 0, 0, 0, 0};
+        static const int ry[6] = {0, 0, -1, 1, 0, 0};
+        static const int rz[6] = {0, 0, 0, 0, -1, 1};
+        for (int i = 0; i < 6; ++i) {
+          int nx = x + rx[i], ny = y + ry[i], nz = z + rz[i];
+          if (!inBounds(nx, ny, nz)) continue;
+          uint8_t neighbor = getBlock(nx, ny, nz);
+          if (isWaterBlock(neighbor)) {
+            // MC-like case: flowing lava directly above water turns that water
+            // into stone, but the flowing lava block itself should not cool
+            // into cobblestone/obsidian from this downward contact alone.
+            if (id == BLOCK_LAVA_FLOW && ny == y - 1) {
+              queueSet(nx, ny, nz, BLOCK_STONE, 0xFF);
+              continue;
+            }
+            queueSet(nx, ny, nz, BLOCK_STONE, 0xFF);
+            queueSet(x, y, z, waterReactionBlock(id, curDepth), 0xFF);
+            cooled = true;
+            break;
+          }
+        }
+        if (cooled) continue;
+
+        int by = y - 1;
+        bool flowedDown = false;
+        if (by >= 0 && canFlowInto(x, by, z)) {
+          if (!isWaterBlock(getBlock(x, by, z))) {
+            queueSet(x, by, z, BLOCK_LAVA_FLOW, 1);
+          }
+          flowedDown = true;
+        }
+
+        uint8_t neighborMin = 7;
+        bool hasLavaNeighbor = false;
+        bool hasLavaAbove = isLavaBlock(getBlock(x, y + 1, z));
+        const uint8_t maxLavaDistance = 4;
+        for (int i = 0; i < 4; ++i) {
+          int nx = x + flowDx[i], nz = z + flowDz[i];
+          if (!inBounds(nx, y, nz)) continue;
+          uint8_t nId = getBlock(nx, y, nz);
+          if (isLavaBlock(nId)) {
+            hasLavaNeighbor = true;
+            uint8_t nd = getLavaDepth(nx, y, nz);
+            if (nd == 0xFF) nd = (nId == BLOCK_LAVA_STILL) ? 0 : 1;
+            if (nd != 0xFF && nd < neighborMin) neighborMin = nd;
+          } else if (isWaterBlock(nId)) {
+            queueSet(nx, y, nz, BLOCK_STONE, 0xFF);
+          }
+        }
+
+        uint8_t nextDepth = curDepth;
+        if (id == BLOCK_LAVA_STILL) {
+          nextDepth = 0;
+        } else {
+          if (hasLavaAbove) nextDepth = 1;
+          else if (neighborMin < maxLavaDistance) nextDepth = (uint8_t)(neighborMin + 1);
+          else nextDepth = 8;
+        }
+
+        if (nextDepth <= 7) {
+          uint8_t spreadDepth = (id == BLOCK_LAVA_STILL) ? 1 : (uint8_t)(nextDepth + 1);
+          if (spreadDepth <= maxLavaDistance && !flowedDown) {
+            for (int i = 0; i < 4; ++i) {
+              int nx = x + flowDx[i], nz = z + flowDz[i];
+              if (!inBounds(nx, y, nz)) continue;
+              if (!canFlowInto(nx, y, nz)) continue;
+              uint8_t nId = getBlock(nx, y, nz);
+              if (isWaterBlock(nId)) continue;
+              uint8_t nDepth = getLavaDepth(nx, y, nz);
+              if (!isLavaBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
+                queueSet(nx, y, nz, BLOCK_LAVA_FLOW, spreadDepth);
+              }
+            }
+          }
+          if (id == BLOCK_LAVA_FLOW) {
+            if (nextDepth >= 8 || (!hasLavaAbove && !hasLavaNeighbor && !flowedDown)) {
+              queueSet(x, y, z, BLOCK_AIR, 0xFF);
+            } else {
+              queueSet(x, y, z, (nextDepth == 0) ? BLOCK_LAVA_STILL : BLOCK_LAVA_FLOW, nextDepth);
+            }
+          } else {
+            queueSet(x, y, z, BLOCK_LAVA_STILL, 0);
+          }
+        } else {
+          queueSet(x, y, z, BLOCK_AIR, 0xFF);
+        }
+      }
+    }
+  }
+
+  for (const auto &op : ops) {
+    int cx = op.x >> 4;
+    int cz = op.z >> 4;
+    if (cx < 0 || cx >= WORLD_CHUNKS_X || cz < 0 || cz >= WORLD_CHUNKS_Z || op.y < 0 || op.y >= CHUNK_SIZE_Y) continue;
+    uint8_t cur = m_chunks[cx][cz]->getBlock(op.x & 0xF, op.y, op.z & 0xF);
+    if (cur != op.id) {
+      m_chunks[cx][cz]->setBlock(op.x & 0xF, op.y, op.z & 0xF, op.id);
+      updateLight(op.x, op.y, op.z);
+      markDirty(op.x, op.y, op.z);
+    }
+    setLavaDepth(op.x, op.y, op.z, op.depth);
+    if (isWaterBlock(op.id)) setWaterDepth(op.x, op.y, op.z, (op.id == BLOCK_WATER_STILL) ? 0 : 1);
+    else setWaterDepth(op.x, op.y, op.z, 0xFF);
+    if (isWaterBlock(cur) || isWaterBlock(op.id)) {
+      m_waterDirty = true;
+      m_waterWakeX = op.x;
+      m_waterWakeY = op.y;
+      m_waterWakeZ = op.z;
+      m_waterWakeTicks = 16;
+    }
+  }
+  m_lavaDirty = !ops.empty();
 }
 
 Level::Level() {
   memset(m_chunks, 0, sizeof(m_chunks));
   m_waterDepth.resize(WORLD_CHUNKS_X * CHUNK_SIZE_X * CHUNK_SIZE_Y * WORLD_CHUNKS_Z * CHUNK_SIZE_Z, 0xFF);
+  m_lavaDepth.resize(WORLD_CHUNKS_X * CHUNK_SIZE_X * CHUNK_SIZE_Y * WORLD_CHUNKS_Z * CHUNK_SIZE_Z, 0xFF);
   for (int cx = 0; cx < WORLD_CHUNKS_X; cx++)
     for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++)
       m_chunks[cx][cz] = new Chunk();
@@ -311,6 +585,10 @@ int Level::waterIndex(int wx, int wy, int wz) const {
   return ((wy * (WORLD_CHUNKS_Z * CHUNK_SIZE_Z) + wz) * (WORLD_CHUNKS_X * CHUNK_SIZE_X) + wx);
 }
 
+int Level::lavaIndex(int wx, int wy, int wz) const {
+  return ((wy * (WORLD_CHUNKS_Z * CHUNK_SIZE_Z) + wz) * (WORLD_CHUNKS_X * CHUNK_SIZE_X) + wx);
+}
+
 uint8_t Level::getWaterDepth(int wx, int wy, int wz) const {
   int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
   int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
@@ -323,6 +601,20 @@ void Level::setWaterDepth(int wx, int wy, int wz, uint8_t depth) {
   int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
   if (wx < 0 || wx >= maxX || wz < 0 || wz >= maxZ || wy < 0 || wy >= CHUNK_SIZE_Y) return;
   m_waterDepth[waterIndex(wx, wy, wz)] = depth;
+}
+
+uint8_t Level::getLavaDepth(int wx, int wy, int wz) const {
+  int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  if (wx < 0 || wx >= maxX || wz < 0 || wz >= maxZ || wy < 0 || wy >= CHUNK_SIZE_Y) return 0xFF;
+  return m_lavaDepth[lavaIndex(wx, wy, wz)];
+}
+
+void Level::setLavaDepth(int wx, int wy, int wz, uint8_t depth) {
+  int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  if (wx < 0 || wx >= maxX || wz < 0 || wz >= maxZ || wy < 0 || wy >= CHUNK_SIZE_Y) return;
+  m_lavaDepth[lavaIndex(wx, wy, wz)] = depth;
 }
 
 void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
@@ -338,8 +630,14 @@ void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
   } else {
     setWaterDepth(wx, wy, wz, 0xFF);
   }
+  if (isLavaBlock(id)) {
+    setLavaDepth(wx, wy, wz, (id == BLOCK_LAVA_STILL) ? 0 : 1);
+  } else {
+    setLavaDepth(wx, wy, wz, 0xFF);
+  }
 
   bool touchesWater = isWaterBlock(oldId) || isWaterBlock(id);
+  bool touchesLava = isLavaBlock(oldId) || isLavaBlock(id);
   if (!touchesWater) {
     static const int dx[6] = {-1, 1, 0, 0, 0, 0};
     static const int dy[6] = {0, 0, -1, 1, 0, 0};
@@ -353,12 +651,32 @@ void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
       }
     }
   }
+  if (!touchesLava) {
+    static const int dx[6] = {-1, 1, 0, 0, 0, 0};
+    static const int dy[6] = {0, 0, -1, 1, 0, 0};
+    static const int dz[6] = {0, 0, 0, 0, -1, 1};
+    for (int i = 0; i < 6; ++i) {
+      int nx = wx + dx[i], ny = wy + dy[i], nz = wz + dz[i];
+      if (ny < 0 || ny >= CHUNK_SIZE_Y) continue;
+      if (isLavaBlock(getBlock(nx, ny, nz))) {
+        touchesLava = true;
+        break;
+      }
+    }
+  }
   if (touchesWater) {
     m_waterDirty = true;
     m_waterWakeX = wx;
     m_waterWakeY = wy;
     m_waterWakeZ = wz;
     m_waterWakeTicks = 16;
+  }
+  if (touchesLava) {
+    m_lavaDirty = true;
+    m_lavaWakeX = wx;
+    m_lavaWakeY = wy;
+    m_lavaWakeZ = wz;
+    m_lavaWakeTicks = 24;
   }
 
   updateLight(wx, wy, wz);
@@ -438,15 +756,17 @@ bool Level::saveToFile(const char *path) const {
     uint32_t chunkY;
     int64_t time;
     uint32_t waterSize;
+    uint32_t lavaSize;
   } hdr;
 
   memcpy(hdr.magic, "MCPSPWLD", 8);
-  hdr.version = 1;
+  hdr.version = 3;
   hdr.chunksX = WORLD_CHUNKS_X;
   hdr.chunksZ = WORLD_CHUNKS_Z;
   hdr.chunkY = CHUNK_SIZE_Y;
   hdr.time = m_time;
   hdr.waterSize = (uint32_t)m_waterDepth.size();
+  hdr.lavaSize = (uint32_t)m_lavaDepth.size();
   if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
 
   for (int cx = 0; cx < WORLD_CHUNKS_X; ++cx) {
@@ -463,6 +783,12 @@ bool Level::saveToFile(const char *path) const {
       return false;
     }
   }
+  if (!m_lavaDepth.empty()) {
+    if (fwrite(m_lavaDepth.data(), 1, m_lavaDepth.size(), f) != m_lavaDepth.size()) {
+      fclose(f);
+      return false;
+    }
+  }
 
   fflush(f);
   fclose(f);
@@ -474,7 +800,7 @@ bool Level::loadFromFile(const char *path) {
   FILE *f = fopen(path, "rb");
   if (!f) return false;
 
-  struct SaveHeader {
+  struct SaveHeaderV2 {
     char magic[8];
     uint32_t version;
     uint32_t chunksX;
@@ -482,12 +808,43 @@ bool Level::loadFromFile(const char *path) {
     uint32_t chunkY;
     int64_t time;
     uint32_t waterSize;
-  } hdr;
+  };
+  struct SaveHeaderV3 {
+    char magic[8];
+    uint32_t version;
+    uint32_t chunksX;
+    uint32_t chunksZ;
+    uint32_t chunkY;
+    int64_t time;
+    uint32_t waterSize;
+    uint32_t lavaSize;
+  };
+  SaveHeaderV3 hdr;
+  memset(&hdr, 0, sizeof(hdr));
 
-  if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
-  if (memcmp(hdr.magic, "MCPSPWLD", 8) != 0 || (hdr.version != 1 && hdr.version != 2)) { fclose(f); return false; }
+  uint32_t version = 0;
+  if (fseek(f, 8, SEEK_SET) != 0) { fclose(f); return false; }
+  if (fread(&version, sizeof(version), 1, f) != 1) { fclose(f); return false; }
+  if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return false; }
+
+  if (version >= 3) {
+    if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
+  } else {
+    SaveHeaderV2 oldHdr;
+    if (fread(&oldHdr, sizeof(oldHdr), 1, f) != 1) { fclose(f); return false; }
+    memcpy(hdr.magic, oldHdr.magic, sizeof(hdr.magic));
+    hdr.version = oldHdr.version;
+    hdr.chunksX = oldHdr.chunksX;
+    hdr.chunksZ = oldHdr.chunksZ;
+    hdr.chunkY = oldHdr.chunkY;
+    hdr.time = oldHdr.time;
+    hdr.waterSize = oldHdr.waterSize;
+    hdr.lavaSize = (uint32_t)m_lavaDepth.size();
+  }
+  if (memcmp(hdr.magic, "MCPSPWLD", 8) != 0 || (hdr.version != 1 && hdr.version != 2 && hdr.version != 3)) { fclose(f); return false; }
   if (hdr.chunksX != WORLD_CHUNKS_X || hdr.chunksZ != WORLD_CHUNKS_Z || hdr.chunkY != CHUNK_SIZE_Y) { fclose(f); return false; }
   if (hdr.waterSize != m_waterDepth.size()) { fclose(f); return false; }
+  if (hdr.version >= 3 && hdr.lavaSize != m_lavaDepth.size()) { fclose(f); return false; }
 
   for (int cx = 0; cx < WORLD_CHUNKS_X; ++cx) {
     for (int cz = 0; cz < WORLD_CHUNKS_Z; ++cz) {
@@ -506,10 +863,28 @@ bool Level::loadFromFile(const char *path) {
       return false;
     }
   }
+  if (hdr.version >= 3 && !m_lavaDepth.empty()) {
+    if (fread(m_lavaDepth.data(), 1, m_lavaDepth.size(), f) != m_lavaDepth.size()) {
+      fclose(f);
+      return false;
+    }
+  } else {
+    for (int y = 0; y < CHUNK_SIZE_Y; ++y) {
+      for (int z = 0; z < WORLD_CHUNKS_Z * CHUNK_SIZE_Z; ++z) {
+        for (int x = 0; x < WORLD_CHUNKS_X * CHUNK_SIZE_X; ++x) {
+          uint8_t id = getBlock(x, y, z);
+          if (id == BLOCK_LAVA_STILL) setLavaDepth(x, y, z, 0);
+          else if (id == BLOCK_LAVA_FLOW) setLavaDepth(x, y, z, 1);
+          else setLavaDepth(x, y, z, 0xFF);
+        }
+      }
+    }
+  }
 
   fclose(f);
   m_time = hdr.time;
   m_waterDirty = true;
+  m_lavaDirty = true;
   return true;
 }
 
@@ -553,6 +928,9 @@ void Level::generate(Random *rng) {
         if (id == BLOCK_WATER_STILL) setWaterDepth(x, y, z, 0);
         else if (id == BLOCK_WATER_FLOW) setWaterDepth(x, y, z, 1);
         else setWaterDepth(x, y, z, 0xFF);
+        if (id == BLOCK_LAVA_STILL) setLavaDepth(x, y, z, 0);
+        else if (id == BLOCK_LAVA_FLOW) setLavaDepth(x, y, z, 1);
+        else setLavaDepth(x, y, z, 0xFF);
       }
     }
   }
