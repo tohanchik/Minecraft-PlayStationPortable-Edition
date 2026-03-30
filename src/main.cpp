@@ -264,6 +264,14 @@ static void hudDrawText5x7(float x, float y, const char *text, uint32_t color, f
   }
 }
 
+static float hudMeasureText5x7(const char *text, float scale) {
+  if (!text) return 0.0f;
+  int len = 0;
+  while (text[len]) ++len;
+  if (len <= 0) return 0.0f;
+  return (len * 6.0f - 1.0f) * scale;
+}
+
 static void drawHotbarHUD() {
   g_inventoryHoverName = nullptr;
   const float slot = 24.0f;
@@ -348,21 +356,22 @@ static void drawHotbarHUD() {
     hudDrawRect(deleteX, deleteY, cellSize, cellSize, 0x90503030); // destroy slot
     hudDrawText5x7(deleteX + 6.0f, deleteY + 6.0f, "X", 0xFFFFFFFF, 1.0f);
 
-    if (g_creativeInv.cursorHasItem()) {
-      hudDrawRect(panelX + panelW + 10.0f, panelY + 8.0f, 20.0f, 20.0f, 0xD0FFFFFF);
-      int tx, ty;
-      hudGetIconTile(g_creativeInv.cursorItem(), tx, ty);
-      hudDrawTile(g_atlas, tx, ty, panelX + panelW + 11.5f, panelY + 9.5f, 17.0f);
-    }
-
     float cursorX = gridX(g_creativeInv.cursorX());
     float cursorY = (g_creativeInv.cursorY() < 5) ? gridY(g_creativeInv.cursorY()) : hotbarY;
     if (g_creativeInv.cursorY() == 5 && g_creativeInv.cursorX() == 10) {
       cursorX = deleteX;
       cursorY = deleteY;
     }
-    if (g_guiCursorTex.data) hudDrawTexture(g_guiCursorTex, cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f);
-    else hudDrawRect(cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f, 0xD0FFFFFF);
+    if (g_creativeInv.cursorHasItem()) {
+      const float cursorIconSize = iconSize * 0.75f;
+      int tx, ty;
+      hudGetIconTile(g_creativeInv.cursorItem(), tx, ty);
+      hudDrawTile(g_atlas, tx, ty, cursorX + (cellSize - cursorIconSize) * 0.5f,
+                  cursorY + (cellSize - cursorIconSize) * 0.5f, cursorIconSize);
+    } else {
+      if (g_guiCursorTex.data) hudDrawTexture(g_guiCursorTex, cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f);
+      else hudDrawRect(cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f, 0xD0FFFFFF);
+    }
 
     if (g_creativeInv.cursorY() < 5 && g_creativeInv.cursorX() < 10) {
       int hover = base + g_creativeInv.cursorY() * creativeCols + g_creativeInv.cursorX();
@@ -392,9 +401,13 @@ static void drawHotbarHUD() {
     hudDrawRect(tabX0 + g_creativeInv.category() * tabStep, tabY0, tabW, 32.0f, 0x50FFFF00);
 
     // Replace baked "Building Blocks" texture text with runtime pixel-font category label.
-    const float titleX = 206.0f + g_invOffsetX;
+    const float titleAreaX = 206.0f + g_invOffsetX;
     const float titleY = 73.0f + g_invOffsetY;
-    hudDrawRect(titleX - 2.0f, titleY - 2.0f, 120.0f, 12.0f, 0x90D0D0D0);
+    const float titleAreaW = 120.0f;
+    const char *catName = g_creativeInv.categoryName();
+    const float titleW = hudMeasureText5x7(catName, 1.1f);
+    const float titleX = titleAreaX + (titleAreaW - titleW) * 0.5f;
+    hudDrawRect(titleAreaX - 2.0f, titleY - 2.0f, titleAreaW, 12.0f, 0x90D0D0D0);
     hudDrawText5x7(titleX, titleY, g_creativeInv.categoryName(), 0xFF303030, 1.1f);
     if (g_invTuneMode) {
       hudDrawRect(86.0f, 242.0f, 308.0f, 14.0f, 0xA0000000);
@@ -958,9 +971,13 @@ static void game_update(float dt) {
     g_creativeInv.open();
   }
   if (g_creativeInv.isOpen() && PSPInput_JustPressed(PSP_CTRL_CIRCLE)) {
-    g_creativeInv.close();
-    g_invTuneMode = false;
-    g_invTuneTarget = 0;
+    if (g_creativeInv.cursorHasItem()) {
+      g_creativeInv.clearCursorSelection();
+    } else {
+      g_creativeInv.close();
+      g_invTuneMode = false;
+      g_invTuneTarget = 0;
+    }
   }
   if (PSPInput_JustPressed(PSP_CTRL_RIGHT) && !g_creativeInv.isOpen()) g_creativeInv.cycleHotbarRight();
   if (PSPInput_JustPressed(PSP_CTRL_LEFT) && !g_creativeInv.isOpen()) g_creativeInv.cycleHotbarLeft();
@@ -1212,6 +1229,15 @@ static void game_render() {
   sceGuEnable(GU_BLEND);
   sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
   drawHotbarHUD();
+  if (!g_creativeInv.isOpen() && g_hitResult.hit) {
+    const char *lookName = getBlockDisplayName(g_hitResult.id);
+    const float textScale = 1.1f;
+    const float nameW = hudMeasureText5x7(lookName, textScale);
+    const float nameX = 240.0f + 10.0f;
+    const float nameY = 136.0f - 4.0f;
+    hudDrawRect(nameX - 3.0f, nameY - 2.0f, nameW + 6.0f, 12.0f, 0xA0000000);
+    hudDrawText5x7(nameX, nameY, lookName, 0xFFFFFFFF, textScale);
+  }
   if (g_pauseOpen) {
     hudDrawRect(110.0f, 64.0f, 260.0f, 140.0f, 0xB0000000);
     hudDrawText5x7(180.0f, 88.0f, "PAUSE", 0xFFFFFFFF, 2.0f);

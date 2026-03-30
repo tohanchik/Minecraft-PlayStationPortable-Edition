@@ -18,6 +18,7 @@ public:
   void moveUp();
   void moveDown();
   void pressCross();
+  void clearCursorSelection();
 
   uint8_t heldBlock() const;
 
