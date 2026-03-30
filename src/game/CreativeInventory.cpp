@@ -2,28 +2,36 @@
 #include "world/Blocks.h"
 
 static const uint8_t kInventoryItems[] = {
-  BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
-  BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
-  BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
-  BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK, BLOCK_BOOKSHELF,
-  BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN, BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
-  BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_WATER_STILL,
-  BLOCK_WATER_FLOW, BLOCK_LAVA_STILL, BLOCK_LAVA_FLOW, BLOCK_GOLD_ORE, BLOCK_IRON_ORE,
-  BLOCK_COAL_ORE, BLOCK_DIAMOND_ORE, BLOCK_DIAMOND_BLOCK, BLOCK_LAPIS_ORE, BLOCK_REDSTONE_ORE,
-  BLOCK_TNT, BLOCK_CHEST, BLOCK_CRAFTING_TABLE, BLOCK_FURNACE, BLOCK_CACTUS,
-  BLOCK_SNOW, BLOCK_SNOW_BLOCK, BLOCK_ICE, BLOCK_CLAY, BLOCK_REEDS
+  // Blocks
+  BLOCK_STONE, BLOCK_COBBLESTONE, BLOCK_DIRT, BLOCK_GRASS,
+  BLOCK_SAND, BLOCK_GRAVEL, BLOCK_SANDSTONE, BLOCK_WOOD_PLANK,
+  BLOCK_LOG, BLOCK_LEAVES, BLOCK_GLASS, BLOCK_WOOL,
+  BLOCK_BRICK, BLOCK_BOOKSHELF, BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN,
+  BLOCK_NETHERRACK, BLOCK_GLOWSTONE,
+  // Ores
+  BLOCK_COAL_ORE, BLOCK_IRON_ORE, BLOCK_GOLD_ORE, BLOCK_DIAMOND_ORE,
+  // Plants
+  BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_FLOWER, BLOCK_ROSE,
+  // Liquids
+  BLOCK_WATER_STILL, BLOCK_WATER_FLOW, BLOCK_LAVA_STILL, BLOCK_LAVA_FLOW,
+  // Minerals
+  BLOCK_IRON_BLOCK, BLOCK_GOLD_BLOCK, BLOCK_DIAMOND_BLOCK,
+  // Utility
+  BLOCK_TNT, BLOCK_CHEST, BLOCK_CRAFTING_TABLE, BLOCK_FURNACE,
+  // Nature
+  BLOCK_PUMPKIN, BLOCK_CACTUS, BLOCK_REEDS, BLOCK_SNOW, BLOCK_SNOW_BLOCK, BLOCK_ICE, BLOCK_CLAY
 };
 
 struct CatRange { int start; int end; const char *name; };
 static const CatRange kCatRanges[] = {
-  {0, 11, "Blocks"},
-  {12, 19, "Ores"},
-  {20, 24, "Plants"},
-  {25, 27, "Liquids"},
-  {28, 34, "Minerals"},
-  {35, 39, "Utility"},
-  {40, 44, "Nature"},
-  {0, 44, "All"}
+  {0, 17, "Blocks"},
+  {18, 21, "Ores"},
+  {22, 25, "Plants"},
+  {26, 29, "Liquids"},
+  {30, 32, "Minerals"},
+  {33, 36, "Utility"},
+  {37, 43, "Nature"},
+  {0, 43, "All"}
 };
 
 CreativeInventory::CreativeInventory()
@@ -122,6 +130,11 @@ void CreativeInventory::pressCross() {
     m_cursorItem = categoryItemAt(idx);
     m_cursorHasItem = true;
   }
+}
+
+void CreativeInventory::clearCursorSelection() {
+  m_cursorHasItem = false;
+  m_cursorItem = BLOCK_AIR;
 }
 
 uint8_t CreativeInventory::heldBlock() const { return m_hotbar[m_hotbarSel]; }
