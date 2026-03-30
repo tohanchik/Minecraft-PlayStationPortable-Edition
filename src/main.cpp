@@ -103,7 +103,7 @@ static uint32_t g_statusColor = 0xFFFFFFFF;
 static float g_autoSaveTimer = 0.0f;
 static const float kAutoSaveIntervalSec = 60.0f;
 static bool g_invTuneMode = false;
-static int g_invTuneTarget = 0; // 0=GRID, 1=HOTBAR, 2=DELETE
+static int g_invTuneTarget = 0; // 0=GRID, 1=HOTBAR, 2=DELETE, 3=TITLE
 static float g_invCellStep = 21.300f;
 static float g_invStretchX = 0.750f;
 static float g_invCompressY = 1.250f;
@@ -115,6 +115,8 @@ static float g_invHotbarOffsetX = 0.0f;
 static float g_invHotbarOffsetY = -13.350f;
 static float g_invDeleteOffsetX = -37.874f;
 static float g_invDeleteOffsetY = -1.184f;
+static float g_invTitleOffsetX = 0.0f;
+static float g_invTitleOffsetY = 0.0f;
 
 struct HudColVert {
   uint32_t color;
@@ -264,6 +266,14 @@ static void hudDrawText5x7(float x, float y, const char *text, uint32_t color, f
   }
 }
 
+static float hudMeasureText5x7(const char *text, float scale) {
+  if (!text) return 0.0f;
+  int len = 0;
+  while (text[len]) ++len;
+  if (len <= 0) return 0.0f;
+  return (len * 6.0f - 1.0f) * scale;
+}
+
 static void drawHotbarHUD() {
   g_inventoryHoverName = nullptr;
   const float slot = 24.0f;
@@ -278,9 +288,11 @@ static void drawHotbarHUD() {
     hudDrawRect(sx - 1, y - 1, slot + 2, slot + 2, selected ? 0xD0FFFFFF : 0x90303030);
     hudDrawRect(sx, y, slot, slot, 0x90000000);
     uint8_t id = g_creativeInv.hotbarAt(i);
-    int tx, ty;
-    hudGetIconTile(id, tx, ty);
-    hudDrawTile(g_atlas, tx, ty, sx + 3, y + 3, slot - 6);
+    if (id != BLOCK_AIR) {
+      int tx, ty;
+      hudGetIconTile(id, tx, ty);
+      hudDrawTile(g_atlas, tx, ty, sx + 3, y + 3, slot - 6);
+    }
   }
 
   if (g_creativeInv.isOpen()) {
@@ -336,9 +348,11 @@ static void drawHotbarHUD() {
       if (g_guiCellTex.data) hudDrawTexture(g_guiCellTex, sx, hotbarY, cellSize, cellSize);
       else hudDrawRect(sx, hotbarY, cellSize, cellSize, 0x90303030);
       uint8_t id = g_creativeInv.hotbarAt(i);
-      int tx, ty;
-      hudGetIconTile(id, tx, ty);
-      hudDrawTile(g_atlas, tx, ty, sx + iconPad, hotbarY + iconPad, iconSize);
+      if (id != BLOCK_AIR) {
+        int tx, ty;
+        hudGetIconTile(id, tx, ty);
+        hudDrawTile(g_atlas, tx, ty, sx + iconPad, hotbarY + iconPad, iconSize);
+      }
     }
 
     if (g_guiSliderTex.data) hudDrawTexture(g_guiSliderTex, sliderX, cellY0, sliderW, 5.0f * cellStepY + (cellSize - cellStepY));
@@ -348,21 +362,22 @@ static void drawHotbarHUD() {
     hudDrawRect(deleteX, deleteY, cellSize, cellSize, 0x90503030); // destroy slot
     hudDrawText5x7(deleteX + 6.0f, deleteY + 6.0f, "X", 0xFFFFFFFF, 1.0f);
 
-    if (g_creativeInv.cursorHasItem()) {
-      hudDrawRect(panelX + panelW + 10.0f, panelY + 8.0f, 20.0f, 20.0f, 0xD0FFFFFF);
-      int tx, ty;
-      hudGetIconTile(g_creativeInv.cursorItem(), tx, ty);
-      hudDrawTile(g_atlas, tx, ty, panelX + panelW + 11.5f, panelY + 9.5f, 17.0f);
-    }
-
     float cursorX = gridX(g_creativeInv.cursorX());
     float cursorY = (g_creativeInv.cursorY() < 5) ? gridY(g_creativeInv.cursorY()) : hotbarY;
     if (g_creativeInv.cursorY() == 5 && g_creativeInv.cursorX() == 10) {
       cursorX = deleteX;
       cursorY = deleteY;
     }
-    if (g_guiCursorTex.data) hudDrawTexture(g_guiCursorTex, cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f);
-    else hudDrawRect(cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f, 0xD0FFFFFF);
+    if (g_creativeInv.cursorHasItem()) {
+      const float cursorIconSize = iconSize * 0.75f;
+      int tx, ty;
+      hudGetIconTile(g_creativeInv.cursorItem(), tx, ty);
+      hudDrawTile(g_atlas, tx, ty, cursorX + (cellSize - cursorIconSize) * 0.5f,
+                  cursorY + (cellSize - cursorIconSize) * 0.5f, cursorIconSize);
+    } else {
+      if (g_guiCursorTex.data) hudDrawTexture(g_guiCursorTex, cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f);
+      else hudDrawRect(cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f, 0xD0FFFFFF);
+    }
 
     if (g_creativeInv.cursorY() < 5 && g_creativeInv.cursorX() < 10) {
       int hover = base + g_creativeInv.cursorY() * creativeCols + g_creativeInv.cursorX();
@@ -375,8 +390,16 @@ static void drawHotbarHUD() {
       g_inventoryHoverName = "Page Slider";
     }
     if (g_inventoryHoverName) {
-      hudDrawRect(panelX, panelY + panelH + 4.0f, panelW, 14.0f, 0x90000000);
-      hudDrawText5x7(panelX + 3.0f, panelY + panelH + 6.0f, g_inventoryHoverName, 0xFFFFFFFF, 1.3f);
+      const float hoverScale = 1.1f;
+      const float hoverW = hudMeasureText5x7(g_inventoryHoverName, hoverScale);
+      float hoverX = cursorX + cellSize + 6.0f;
+      float hoverY = cursorY + (cellSize - 8.0f) * 0.5f;
+      if (hoverX + hoverW + 8.0f > 478.0f) hoverX = cursorX - hoverW - 8.0f;
+      if (hoverX < 2.0f) hoverX = 2.0f;
+      if (hoverY < 2.0f) hoverY = 2.0f;
+      if (hoverY > 258.0f) hoverY = 258.0f;
+      hudDrawRect(hoverX - 2.0f, hoverY - 2.0f, hoverW + 4.0f, 12.0f, 0xA0000000);
+      hudDrawText5x7(hoverX, hoverY, g_inventoryHoverName, 0xFFFFFFFF, hoverScale);
     }
 
     int maxPage = (invCount / itemsPerPage);
@@ -392,15 +415,20 @@ static void drawHotbarHUD() {
     hudDrawRect(tabX0 + g_creativeInv.category() * tabStep, tabY0, tabW, 32.0f, 0x50FFFF00);
 
     // Replace baked "Building Blocks" texture text with runtime pixel-font category label.
-    const float titleX = 206.0f + g_invOffsetX;
-    const float titleY = 73.0f + g_invOffsetY;
-    hudDrawRect(titleX - 2.0f, titleY - 2.0f, 120.0f, 12.0f, 0x90D0D0D0);
+    const float titleAreaX = 206.0f + g_invOffsetX;
+    const float titleY = 73.0f + g_invOffsetY + g_invTitleOffsetY;
+    const float titleAreaW = 120.0f;
+    const char *catName = g_creativeInv.categoryName();
+    const float titleW = hudMeasureText5x7(catName, 1.1f);
+    const float titleX = titleAreaX + (titleAreaW - titleW) * 0.5f + g_invTitleOffsetX;
+    hudDrawRect(titleAreaX - 2.0f, titleY - 2.0f, titleAreaW, 12.0f, 0x90D0D0D0);
     hudDrawText5x7(titleX, titleY, g_creativeInv.categoryName(), 0xFF303030, 1.1f);
     if (g_invTuneMode) {
       hudDrawRect(86.0f, 242.0f, 308.0f, 14.0f, 0xA0000000);
       const char *tuneLabel = "TUNE GRID (SELECT)";
       if (g_invTuneTarget == 1) tuneLabel = "TUNE HOTBAR (SELECT)";
       else if (g_invTuneTarget == 2) tuneLabel = "TUNE DELETE (SELECT)";
+      else if (g_invTuneTarget == 3) tuneLabel = "TUNE TITLE (SELECT)";
       hudDrawText5x7(90.0f, 245.0f, tuneLabel, 0xFFFFFFFF, 1.0f);
     }
   }
@@ -447,7 +475,9 @@ static void loadInventoryLayoutConfig() {
   float step = 0.0f, sx = 0.0f, cy = 0.0f, ox = 0.0f, oy = 0.0f;
   float hs = 0.0f, hst = 0.0f, hox = 0.0f, hoy = 0.0f;
   float dx = 0.0f, dy = 0.0f;
-  int n = fscanf(f, "%f %f %f %f %f %f %f %f %f %f %f", &step, &sx, &cy, &ox, &oy, &hs, &hst, &hox, &hoy, &dx, &dy);
+  float tx = 0.0f, ty = 0.0f;
+  int n = fscanf(f, "%f %f %f %f %f %f %f %f %f %f %f %f %f",
+                 &step, &sx, &cy, &ox, &oy, &hs, &hst, &hox, &hoy, &dx, &dy, &tx, &ty);
   if (n >= 3) {
     if (step >= 16.0f && step <= 28.0f) g_invCellStep = step;
     if (sx >= -2.0f && sx <= 2.0f) g_invStretchX = sx;
@@ -466,6 +496,10 @@ static void loadInventoryLayoutConfig() {
       if (dx >= -80.0f && dx <= 80.0f) g_invDeleteOffsetX = dx;
       if (dy >= -80.0f && dy <= 80.0f) g_invDeleteOffsetY = dy;
     }
+    if (n >= 13) {
+      if (tx >= -80.0f && tx <= 80.0f) g_invTitleOffsetX = tx;
+      if (ty >= -80.0f && ty <= 80.0f) g_invTitleOffsetY = ty;
+    }
   }
   fclose(f);
 }
@@ -473,10 +507,10 @@ static void loadInventoryLayoutConfig() {
 static void saveInventoryLayoutConfig() {
   FILE *f = fopen(kInvLayoutCfgPath, "wb");
   if (!f) return;
-  fprintf(f, "%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
+  fprintf(f, "%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
           g_invCellStep, g_invStretchX, g_invCompressY, g_invOffsetX, g_invOffsetY,
           g_invHotbarStepX, g_invHotbarStretchX, g_invHotbarOffsetX, g_invHotbarOffsetY,
-          g_invDeleteOffsetX, g_invDeleteOffsetY);
+          g_invDeleteOffsetX, g_invDeleteOffsetY, g_invTitleOffsetX, g_invTitleOffsetY);
   fclose(f);
 }
 
@@ -958,14 +992,23 @@ static void game_update(float dt) {
     g_creativeInv.open();
   }
   if (g_creativeInv.isOpen() && PSPInput_JustPressed(PSP_CTRL_CIRCLE)) {
-    g_creativeInv.close();
-    g_invTuneMode = false;
-    g_invTuneTarget = 0;
+    if (g_creativeInv.cursorHasItem()) {
+      g_creativeInv.clearCursorSelection();
+    } else {
+      g_creativeInv.close();
+      g_invTuneMode = false;
+      g_invTuneTarget = 0;
+    }
   }
   if (PSPInput_JustPressed(PSP_CTRL_RIGHT) && !g_creativeInv.isOpen()) g_creativeInv.cycleHotbarRight();
   if (PSPInput_JustPressed(PSP_CTRL_LEFT) && !g_creativeInv.isOpen()) g_creativeInv.cycleHotbarLeft();
   if (g_creativeInv.isOpen()) {
-    if (PSPInput_JustPressed(PSP_CTRL_TRIANGLE)) {
+    // Hard-to-trigger debug tuning toggle:
+    // hold L + R + SELECT, then press TRIANGLE.
+    if (PSPInput_JustPressed(PSP_CTRL_TRIANGLE) &&
+        PSPInput_IsHeld(PSP_CTRL_LTRIGGER) &&
+        PSPInput_IsHeld(PSP_CTRL_RTRIGGER) &&
+        PSPInput_IsHeld(PSP_CTRL_SELECT)) {
       if (!g_invTuneMode) {
         g_invTuneMode = true;
         g_invTuneTarget = 0;
@@ -979,7 +1022,7 @@ static void game_update(float dt) {
       const float kWarpStep = 0.05f;
       const float kSpacingStep = 0.10f;
       const float kMoveStep = 0.35f;
-      if (PSPInput_JustPressed(PSP_CTRL_SELECT)) g_invTuneTarget = (g_invTuneTarget + 1) % 3;
+      if (PSPInput_JustPressed(PSP_CTRL_SELECT)) g_invTuneTarget = (g_invTuneTarget + 1) % 4;
       if (g_invTuneTarget == 0) {
         if (PSPInput_JustPressed(PSP_CTRL_LEFT)) g_invStretchX -= kWarpStep;
         if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) g_invStretchX += kWarpStep;
@@ -994,11 +1037,16 @@ static void game_update(float dt) {
         if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_invHotbarOffsetY += kMoveStep;
         if (PSPInput_JustPressed(PSP_CTRL_LTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_RTRIGGER)) g_invHotbarStepX -= kSpacingStep;
         if (PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_LTRIGGER)) g_invHotbarStepX += kSpacingStep;
-      } else {
+      } else if (g_invTuneTarget == 2) {
         if (PSPInput_JustPressed(PSP_CTRL_LEFT)) g_invDeleteOffsetX -= kMoveStep;
         if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) g_invDeleteOffsetX += kMoveStep;
         if (PSPInput_JustPressed(PSP_CTRL_UP)) g_invDeleteOffsetY -= kMoveStep;
         if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_invDeleteOffsetY += kMoveStep;
+      } else {
+        if (PSPInput_JustPressed(PSP_CTRL_LEFT)) g_invTitleOffsetX -= kMoveStep;
+        if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) g_invTitleOffsetX += kMoveStep;
+        if (PSPInput_JustPressed(PSP_CTRL_UP)) g_invTitleOffsetY -= kMoveStep;
+        if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_invTitleOffsetY += kMoveStep;
       }
       float mx = PSPInput_StickX(0);
       float my = PSPInput_StickY(0);
@@ -1016,13 +1064,20 @@ static void game_update(float dt) {
         if (g_invHotbarOffsetX > 80.0f) g_invHotbarOffsetX = 80.0f;
         if (g_invHotbarOffsetY < -80.0f) g_invHotbarOffsetY = -80.0f;
         if (g_invHotbarOffsetY > 80.0f) g_invHotbarOffsetY = 80.0f;
-      } else {
+      } else if (g_invTuneTarget == 2) {
         if (fabsf(mx) > 0.12f) g_invDeleteOffsetX += mx * kMoveStep;
         if (fabsf(my) > 0.12f) g_invDeleteOffsetY += my * kMoveStep;
         if (g_invDeleteOffsetX < -80.0f) g_invDeleteOffsetX = -80.0f;
         if (g_invDeleteOffsetX > 80.0f) g_invDeleteOffsetX = 80.0f;
         if (g_invDeleteOffsetY < -80.0f) g_invDeleteOffsetY = -80.0f;
         if (g_invDeleteOffsetY > 80.0f) g_invDeleteOffsetY = 80.0f;
+      } else {
+        if (fabsf(mx) > 0.12f) g_invTitleOffsetX += mx * kMoveStep;
+        if (fabsf(my) > 0.12f) g_invTitleOffsetY += my * kMoveStep;
+        if (g_invTitleOffsetX < -80.0f) g_invTitleOffsetX = -80.0f;
+        if (g_invTitleOffsetX > 80.0f) g_invTitleOffsetX = 80.0f;
+        if (g_invTitleOffsetY < -80.0f) g_invTitleOffsetY = -80.0f;
+        if (g_invTitleOffsetY > 80.0f) g_invTitleOffsetY = 80.0f;
       }
       if (g_invCellStep < 16.0f) g_invCellStep = 16.0f;
       if (g_invCellStep > 28.0f) g_invCellStep = 28.0f;
@@ -1064,7 +1119,11 @@ static void game_update(float dt) {
   }
 
   // Place block
-  if (!g_creativeInv.isOpen() && PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && g_hitResult.hit) {
+  if (!g_creativeInv.isOpen() &&
+      g_heldBlock != BLOCK_AIR &&
+      PSPInput_JustPressed(PSP_CTRL_RTRIGGER) &&
+      !PSPInput_IsHeld(PSP_CTRL_LTRIGGER) &&
+      g_hitResult.hit) {
     int px = g_hitResult.nx;
     int py = g_hitResult.ny;
     int pz = g_hitResult.nz;
@@ -1212,6 +1271,15 @@ static void game_render() {
   sceGuEnable(GU_BLEND);
   sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
   drawHotbarHUD();
+  if (!g_creativeInv.isOpen() && g_hitResult.hit) {
+    const char *lookName = getBlockDisplayName(g_hitResult.id);
+    const float textScale = 1.1f;
+    const float nameW = hudMeasureText5x7(lookName, textScale);
+    const float nameX = (480.0f - nameW) * 0.5f;
+    const float nameY = 12.0f;
+    hudDrawRect(nameX - 3.0f, nameY - 2.0f, nameW + 6.0f, 12.0f, 0xA0000000);
+    hudDrawText5x7(nameX, nameY, lookName, 0xFFFFFFFF, textScale);
+  }
   if (g_pauseOpen) {
     hudDrawRect(110.0f, 64.0f, 260.0f, 140.0f, 0xB0000000);
     hudDrawText5x7(180.0f, 88.0f, "PAUSE", 0xFFFFFFFF, 2.0f);
