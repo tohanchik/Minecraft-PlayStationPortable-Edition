@@ -21,6 +21,7 @@ static unsigned int __attribute__((aligned(16))) g_list[262144];
 static void *g_fbp0; // frame buffer 0
 static void *g_fbp1; // frame buffer 1
 static void *g_zbp;  // depth buffer
+static void *g_drawBuffer; // currently configured GU draw buffer
 
 // VRAM offset calculation
 static void *vrelptr(unsigned int offset) {
@@ -32,6 +33,7 @@ bool PSPRenderer_Init() {
   g_fbp0 = vrelptr(0);
   g_fbp1 = vrelptr(BUF_WIDTH * SCR_HEIGHT * 4);
   g_zbp = vrelptr(2 * BUF_WIDTH * SCR_HEIGHT * 4);
+  g_drawBuffer = g_fbp0;
 
   sceGuInit();
   sceGuStart(GU_DIRECT, g_list);
@@ -137,11 +139,16 @@ void PSPRenderer_GetViewProjMatrix(ScePspFMatrix4 *outVP) {
   sceGumMatrixMode(GU_MODEL);
 }
 
-void PSPRenderer_EndFrame() {
+void *PSPRenderer_EndFrame() {
   sceGuFinish();
   sceGuSync(0, 0);
   sceDisplayWaitVblankStart();
   sceGuSwapBuffers();
+
+  // After swap, the previously-used draw buffer is the one currently displayed.
+  void *shownBuffer = g_drawBuffer;
+  g_drawBuffer = (g_drawBuffer == g_fbp0) ? g_fbp1 : g_fbp0;
+  return shownBuffer;
 }
 
 void PSPRenderer_Shutdown() { sceGuTerm(); }
