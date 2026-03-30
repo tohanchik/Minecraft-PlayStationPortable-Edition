@@ -251,9 +251,9 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     return tesselateCrossInWorld(id, lx, ly, lz, cx, cz);
   }
 
-  // Water uses a dedicated path so it behaves visually like liquid:
+  // Water/lava use a dedicated path so they behave visually like liquid:
   // lower top surface, transparent pass, and hidden inner faces.
-  if (id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW) {
+  if (id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW || id == BLOCK_LAVA_STILL || id == BLOCK_LAVA_FLOW) {
     const BlockUV &uv = g_blockUV[id];
     float wx = (float)(cx * CHUNK_SIZE_X + lx);
     float wy = (float)ly;
@@ -265,8 +265,11 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
     const float ts = 1.0f / 16.0f;
     const float eps = 0.125f / 256.0f;
 
-    auto isWaterId = [](uint8_t b) {
-      return b == BLOCK_WATER_STILL || b == BLOCK_WATER_FLOW;
+    auto isSameLiquidId = [&](uint8_t b) {
+      if (id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW) {
+        return b == BLOCK_WATER_STILL || b == BLOCK_WATER_FLOW;
+      }
+      return b == BLOCK_LAVA_STILL || b == BLOCK_LAVA_FLOW;
     };
 
     // Smooth corner heights (MCPE-like): average nearby liquid levels per corner.
@@ -277,11 +280,11 @@ bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int
         for (int oz = -1; oz <= 0; ++oz) {
           int sx = cx0 + ox;
           int sz = cz0 + oz;
-          if (isWaterId(m_level->getBlock(sx, wY + 1, sz))) return 1.0f;
+          if (isSameLiquidId(m_level->getBlock(sx, wY + 1, sz))) return 1.0f;
           uint8_t idHere = m_level->getBlock(sx, wY, sz);
-          if (isWaterId(idHere)) {
+          if (isSameLiquidId(idHere)) {
             uint8_t d = m_level->getWaterDepth(sx, wY, sz);
-            if (d == 0xFF || d > 7) d = (idHere == BLOCK_WATER_STILL) ? 0 : 1;
+            if (d == 0xFF || d > 7) d = (idHere == BLOCK_WATER_STILL || idHere == BLOCK_LAVA_STILL) ? 0 : 1;
             float h = 1.0f - ((float)d / 8.0f);
             float w = (d == 0) ? 3.0f : 1.0f;
             sum += h * w;
