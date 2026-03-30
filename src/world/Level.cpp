@@ -16,6 +16,14 @@ bool Level::isWaterBlock(uint8_t id) const {
   return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
 }
 
+bool Level::isLavaBlock(uint8_t id) const {
+  return id == BLOCK_LAVA_STILL || id == BLOCK_LAVA_FLOW;
+}
+
+bool Level::isLiquidBlock(uint8_t id) const {
+  return isWaterBlock(id) || isLavaBlock(id);
+}
+
 void Level::setSimulationFocus(int wx, int wy, int wz, int radius) {
   m_simFocusX = wx;
   m_simFocusY = wy;
@@ -25,29 +33,39 @@ void Level::setSimulationFocus(int wx, int wy, int wz, int radius) {
 
 void Level::tick() {
   m_time += 1;
-  if (!m_waterDirty) return;
+  if (!m_waterDirty && !m_lavaDirty) return;
 
   // MCPE-like liquid logic is expensive; run every few world ticks.
-  if (++m_waterTickAccum >= 6) {
+  if (m_waterDirty && ++m_waterTickAccum >= 6) {
     m_waterTickAccum = 0;
-    tickWater();
+    tickLiquid(false);
+  }
+  // Lava is intentionally slower than water.
+  if (m_lavaDirty && ++m_lavaTickAccum >= 24) {
+    m_lavaTickAccum = 0;
+    tickLiquid(true);
+  }
+  if (m_waterDirty || m_lavaDirty) {
     if (m_waterWakeTicks > 0) m_waterWakeTicks--;
   }
 }
 
-void Level::tickWater() {
-  // NOTE: This is intentionally metadata-lite MCPE-style water simulation.
+void Level::tickLiquid(bool lava) {
+  // NOTE: This is intentionally metadata-lite MCPE-style liquid simulation.
   // It tracks a per-block depth value (0..7) to drive both behavior and render heights.
-  struct WaterOp {
+  struct LiquidOp {
     int x, y, z;
     uint8_t id;
     uint8_t depth;
   };
-  std::vector<WaterOp> ops;
+  std::vector<LiquidOp> ops;
   ops.reserve(8192);
-  const int maxWaterCellsPerTick = 2048;
-  int processedWaterCells = 0;
+  const int maxLiquidCellsPerTick = lava ? 1024 : 2048;
+  int processedLiquidCells = 0;
   bool budgetReached = false;
+  const uint8_t dropOff = lava ? 2 : 1;
+  const uint8_t stillId = lava ? BLOCK_LAVA_STILL : BLOCK_WATER_STILL;
+  const uint8_t flowId = lava ? BLOCK_LAVA_FLOW : BLOCK_WATER_FLOW;
 
   const int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
   const int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
@@ -99,11 +117,15 @@ void Level::tickWater() {
     ops.push_back({x, y, z, id, depth});
   };
 
+  auto isSameLiquid = [&](uint8_t id) { return lava ? isLavaBlock(id) : isWaterBlock(id); };
+  auto isOtherLiquid = [&](uint8_t id) { return lava ? isWaterBlock(id) : isLavaBlock(id); };
+
   auto canFlowInto = [&](int x, int y, int z) {
     if (!inBounds(x, y, z)) return false;
     uint8_t t = getBlock(x, y, z);
     if (t == BLOCK_AIR) return true;
-    if (isWaterBlock(t)) return true;
+    if (isSameLiquid(t)) return true;
+    if (isOtherLiquid(t)) return false;
     return !g_blockProps[t].isSolid();
   };
 
@@ -138,70 +160,87 @@ void Level::tickWater() {
     for (int z = simMinZ; z <= simMaxZ; ++z) {
       for (int x = simMinX; x <= simMaxX; ++x) {
         uint8_t id = getBlock(x, y, z);
-        if (!isWaterBlock(id)) continue;
-        if (++processedWaterCells > maxWaterCellsPerTick) {
+        if (!isSameLiquid(id)) continue;
+        if (++processedLiquidCells > maxLiquidCellsPerTick) {
           budgetReached = true;
           break;
         }
 
         // Skip fully enclosed still-water interior (large lakes/oceans) to reduce
         // heavy per-block work near big water bodies.
-        if (id == BLOCK_WATER_STILL) {
-          bool waterAbove = isWaterBlock(getBlock(x, y + 1, z));
-          bool waterBelow = isWaterBlock(getBlock(x, y - 1, z));
-          bool waterSides =
-              isWaterBlock(getBlock(x - 1, y, z)) &&
-              isWaterBlock(getBlock(x + 1, y, z)) &&
-              isWaterBlock(getBlock(x, y, z - 1)) &&
-              isWaterBlock(getBlock(x, y, z + 1));
-          if (waterAbove && waterBelow && waterSides) continue;
+        if (id == stillId) {
+          bool liquidAbove = isSameLiquid(getBlock(x, y + 1, z));
+          bool liquidBelow = isSameLiquid(getBlock(x, y - 1, z));
+          bool liquidSides =
+              isSameLiquid(getBlock(x - 1, y, z)) &&
+              isSameLiquid(getBlock(x + 1, y, z)) &&
+              isSameLiquid(getBlock(x, y, z - 1)) &&
+              isSameLiquid(getBlock(x, y, z + 1));
+          if (liquidAbove && liquidBelow && liquidSides) continue;
         }
         uint8_t curDepth = getWaterDepth(x, y, z);
-        if (curDepth == 0xFF) curDepth = (id == BLOCK_WATER_STILL) ? 0 : 1;
+        if (curDepth == 0xFF) curDepth = (id == stillId) ? 0 : dropOff;
 
-        if (id == BLOCK_WATER_STILL) curDepth = 0;
+        if (id == stillId) curDepth = 0;
+
+        if (lava) {
+          bool touchingWater =
+              isWaterBlock(getBlock(x, y + 1, z)) ||
+              isWaterBlock(getBlock(x - 1, y, z)) ||
+              isWaterBlock(getBlock(x + 1, y, z)) ||
+              isWaterBlock(getBlock(x, y, z - 1)) ||
+              isWaterBlock(getBlock(x, y, z + 1));
+          if (touchingWater) {
+            queueSet(x, y, z, (curDepth == 0) ? BLOCK_OBSIDIAN : BLOCK_COBBLESTONE, 0xFF);
+            continue;
+          }
+        }
 
         // Prefer downward flow.
         int by = y - 1;
         bool flowedDown = false;
         if (by >= 0 && canFlowInto(x, by, z)) {
-          queueSet(x, by, z, BLOCK_WATER_FLOW, 1);
+          queueSet(x, by, z, flowId, dropOff);
+          flowedDown = true;
+        } else if (lava && by >= 0 && isWaterBlock(getBlock(x, by, z))) {
+          // MC-style "stone generator" case: lava descending into water creates stone.
+          queueSet(x, by, z, BLOCK_STONE, 0xFF);
           flowedDown = true;
         }
 
         // Horizontal spread and depth propagation.
         uint8_t neighborMin = 7;
-        bool hasWaterNeighbor = false;
+        bool hasLiquidNeighbor = false;
         int sourceNeighbors = 0;
-        bool hasWaterAbove = isWaterBlock(getBlock(x, y + 1, z));
+        bool hasLiquidAbove = isSameLiquid(getBlock(x, y + 1, z));
         for (int i = 0; i < 4; ++i) {
           int nx = x + flowDx[i], nz = z + flowDz[i];
           if (!inBounds(nx, y, nz)) continue;
           uint8_t nId = getBlock(nx, y, nz);
-          if (isWaterBlock(nId)) {
-            hasWaterNeighbor = true;
+          if (isSameLiquid(nId)) {
+            hasLiquidNeighbor = true;
             uint8_t nd = getWaterDepth(nx, y, nz);
-            if (nd == 0xFF) nd = (nId == BLOCK_WATER_STILL) ? 0 : 1;
+            if (nd == 0xFF) nd = (nId == stillId) ? 0 : 1;
             if (nd == 0) sourceNeighbors++;
             if (nd != 0xFF && nd < neighborMin) neighborMin = nd;
           }
         }
         uint8_t belowId = getBlock(x, y - 1, z);
-        bool supportBelow = (y == 0) || g_blockProps[belowId].isSolid() || isWaterBlock(belowId);
+        bool supportBelow = (y == 0) || g_blockProps[belowId].isSolid() || isSameLiquid(belowId);
         uint8_t nextDepth = curDepth;
-        if (id == BLOCK_WATER_STILL) {
+        if (id == stillId) {
           nextDepth = 0;
         } else {
-          if (hasWaterAbove) nextDepth = 1;
-          else if (sourceNeighbors >= 2 && supportBelow) nextDepth = 0;
-          else if (neighborMin < 7) nextDepth = (uint8_t)(neighborMin + 1);
+          if (hasLiquidAbove) nextDepth = dropOff;
+          else if (!lava && sourceNeighbors >= 2 && supportBelow) nextDepth = 0;
+          else if (neighborMin < 7) nextDepth = (uint8_t)(neighborMin + dropOff);
           else nextDepth = 8;
         }
 
         if (nextDepth <= 7) {
-          uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
+          uint8_t spreadDepth = (id == stillId) ? dropOff : (uint8_t)(nextDepth + dropOff);
           if (spreadDepth <= 7 && !flowedDown) {
-            bool useShortestPathPriority = isWaterBlock(id);
+            bool useShortestPathPriority = isSameLiquid(id);
             int costs[4] = {999, 999, 999, 999};
             int bestCost = 999;
             bool canSpread[4] = {false, false, false, false};
@@ -224,19 +263,19 @@ void Level::tickWater() {
               int nx = x + flowDx[i], nz = z + flowDz[i];
               uint8_t nId = getBlock(nx, y, nz);
               uint8_t nDepth = getWaterDepth(nx, y, nz);
-              if (!isWaterBlock(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
-                queueSet(nx, y, nz, BLOCK_WATER_FLOW, spreadDepth);
+              if (!isSameLiquid(nId) || nDepth == 0xFF || nDepth > spreadDepth) {
+                queueSet(nx, y, nz, flowId, spreadDepth);
               }
             }
           }
-          if (id == BLOCK_WATER_FLOW) {
-            if (nextDepth >= 8 || (!hasWaterAbove && !hasWaterNeighbor && !flowedDown)) {
+          if (id == flowId) {
+            if (nextDepth >= 8 || (!hasLiquidAbove && !hasLiquidNeighbor && !flowedDown)) {
               queueSet(x, y, z, BLOCK_AIR, 0xFF);
             } else {
-              queueSet(x, y, z, (nextDepth == 0) ? BLOCK_WATER_STILL : BLOCK_WATER_FLOW, nextDepth);
+              queueSet(x, y, z, (nextDepth == 0) ? stillId : flowId, nextDepth);
             }
           } else {
-            queueSet(x, y, z, BLOCK_WATER_STILL, 0);
+            queueSet(x, y, z, stillId, 0);
           }
         } else {
           queueSet(x, y, z, BLOCK_AIR, 0xFF);
@@ -257,7 +296,8 @@ void Level::tickWater() {
     }
     setWaterDepth(op.x, op.y, op.z, op.depth);
   }
-  m_waterDirty = !ops.empty();
+  if (lava) m_lavaDirty = !ops.empty();
+  else m_waterDirty = !ops.empty();
 }
 
 Level::Level() {
@@ -333,28 +373,29 @@ void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
   if (oldId == id) return;
   
   m_chunks[cx][cz]->setBlock(wx & 0xF, wy, wz & 0xF, id);
-  if (isWaterBlock(id)) {
-    setWaterDepth(wx, wy, wz, (id == BLOCK_WATER_STILL) ? 0 : 1);
+  if (isLiquidBlock(id)) {
+    setWaterDepth(wx, wy, wz, (id == BLOCK_WATER_STILL || id == BLOCK_LAVA_STILL) ? 0 : 1);
   } else {
     setWaterDepth(wx, wy, wz, 0xFF);
   }
 
-  bool touchesWater = isWaterBlock(oldId) || isWaterBlock(id);
-  if (!touchesWater) {
+  bool touchesLiquid = isLiquidBlock(oldId) || isLiquidBlock(id);
+  if (!touchesLiquid) {
     static const int dx[6] = {-1, 1, 0, 0, 0, 0};
     static const int dy[6] = {0, 0, -1, 1, 0, 0};
     static const int dz[6] = {0, 0, 0, 0, -1, 1};
     for (int i = 0; i < 6; ++i) {
       int nx = wx + dx[i], ny = wy + dy[i], nz = wz + dz[i];
       if (ny < 0 || ny >= CHUNK_SIZE_Y) continue;
-      if (isWaterBlock(getBlock(nx, ny, nz))) {
-        touchesWater = true;
+      if (isLiquidBlock(getBlock(nx, ny, nz))) {
+        touchesLiquid = true;
         break;
       }
     }
   }
-  if (touchesWater) {
+  if (touchesLiquid) {
     m_waterDirty = true;
+    m_lavaDirty = true;
     m_waterWakeX = wx;
     m_waterWakeY = wy;
     m_waterWakeZ = wz;
@@ -510,6 +551,7 @@ bool Level::loadFromFile(const char *path) {
   fclose(f);
   m_time = hdr.time;
   m_waterDirty = true;
+  m_lavaDirty = true;
   return true;
 }
 
