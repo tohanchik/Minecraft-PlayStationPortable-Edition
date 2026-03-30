@@ -23,6 +23,7 @@
 #include "world/Mth.h"
 #include "world/Random.h"
 #include "world/Raycast.h"
+#include "game/CreativeInventory.h"
 #include <ctype.h>
 #include <math.h>
 #include <string.h>
@@ -71,17 +72,21 @@ static SkyRenderer *g_skyRenderer = nullptr;
 static CloudRenderer *g_cloudRenderer = nullptr;
 static ChunkRenderer *g_chunkRenderer = nullptr;
 static TextureAtlas *g_atlas = nullptr;
+static SimpleTexture g_guiInvCreativeTex;
+static SimpleTexture g_guiCursorTex;
+static SimpleTexture g_guiSliderTex;
+static SimpleTexture g_guiCellTex;
 static RayHit g_hitResult;       // Block the player is currently looking at
 static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
-static bool g_inventoryOpen = false;
-static int g_hotbarSel = 0;
-static int g_inventorySel = 0;
-static int g_inventoryScroll = 0;
-static bool g_hotbarAssignMode = false;
-static int g_pendingInventoryItem = -1;
+static CreativeInventory g_creativeInv;
 static const char *g_inventoryHoverName = nullptr;
 static float g_tickAlpha = 0.0f;
 static const char *kWorldDir = "ms0:/PSP/GAME/MinecraftPSP/worlds";
+static const char *kInvLayoutCfgPath = "ms0:/PSP/GAME/MinecraftPSP/inv_layout.cfg";
+static const char *kTexInvCreativePath = "res/gui/inventory_creative.png";
+static const char *kTexCursorPath = "res/gui/cursor.png";
+static const char *kTexSliderPath = "res/gui/slider.png";
+static const char *kTexCellPath = "res/gui/cell.png";
 static const int kMaxWorldSlots = 8;
 static int g_worldSlot = 0;
 static bool g_worldExists[kMaxWorldSlots] = {false};
@@ -97,18 +102,10 @@ static float g_statusTimer = 0.0f;
 static uint32_t g_statusColor = 0xFFFFFFFF;
 static float g_autoSaveTimer = 0.0f;
 static const float kAutoSaveIntervalSec = 60.0f;
-static uint8_t g_hotbar[9] = {
-  BLOCK_COBBLESTONE, BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD_PLANK, BLOCK_GLASS,
-  BLOCK_SAND, BLOCK_LOG, BLOCK_LEAVES, BLOCK_WATER_STILL
-};
-static const uint8_t g_inventoryItems[] = {
-  BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
-  BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
-  BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
-  BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK, BLOCK_BOOKSHELF,
-  BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN, BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
-  BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_WATER_STILL
-};
+static bool g_invTuneMode = false;
+static float g_invCellStep = 21.0f;
+static float g_invStretchX = 0.5f;
+static float g_invCompressY = 0.25f;
 
 struct HudColVert {
   uint32_t color;
@@ -119,6 +116,18 @@ struct HudTexVert {
   float u, v;
   float x, y, z;
 };
+
+static inline void hudDrawTexture(SimpleTexture &tex, float x, float y, float w, float h) {
+  if (!tex.data || tex.width == 0 || tex.height == 0) return;
+  tex.bind();
+  sceGuColor(0xFFFFFFFF);
+  sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+  sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+  HudTexVert *v = (HudTexVert *)sceGuGetMemory(2 * sizeof(HudTexVert));
+  v[0].u = 0.5f;            v[0].v = 0.5f;             v[0].x = x;     v[0].y = y;     v[0].z = 0.0f;
+  v[1].u = tex.width - 0.5f; v[1].v = tex.height - 0.5f; v[1].x = x + w; v[1].y = y + h; v[1].z = 0.0f;
+  sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, 0, v);
+}
 
 static inline void hudDrawRect(float x, float y, float w, float h, uint32_t abgr) {
   sceGuDisable(GU_TEXTURE_2D);
@@ -256,69 +265,124 @@ static void drawHotbarHUD() {
 
   for (int i = 0; i < 9; ++i) {
     float sx = startX + i * (slot + pad);
-    bool selected = (i == g_hotbarSel && (!g_inventoryOpen || g_hotbarAssignMode));
+    bool selected = (i == g_creativeInv.hotbarSel());
     hudDrawRect(sx - 1, y - 1, slot + 2, slot + 2, selected ? 0xD0FFFFFF : 0x90303030);
     hudDrawRect(sx, y, slot, slot, 0x90000000);
-    uint8_t id = g_hotbar[i];
+    uint8_t id = g_creativeInv.hotbarAt(i);
     int tx, ty;
     hudGetIconTile(id, tx, ty);
     hudDrawTile(g_atlas, tx, ty, sx + 3, y + 3, slot - 6);
   }
 
-  if (g_inventoryOpen) {
-    const int invCount = (int)(sizeof(g_inventoryItems) / sizeof(g_inventoryItems[0]));
-    const int cols = 6;
-    const int rows = 4;
-    const float cell = 30.0f;
-    const float panelW = cols * cell + 10.0f;
-    const float panelH = rows * cell + 10.0f;
-    float panelX = (480.0f - panelW) * 0.5f;
-    float panelY = (272.0f - panelH) * 0.30f;
-    hudDrawRect(panelX - 3, panelY - 3, panelW + 6, panelH + 6, 0xC0303030);
-    hudDrawRect(panelX, panelY, panelW, panelH, 0x70000000);
+  if (g_creativeInv.isOpen()) {
+    const int invCount = g_creativeInv.visibleItemCount();
+    const int creativeCols = 10;
+    const int creativeRows = 5;
+    const int itemsPerPage = 50;
+    const float panelX = 96.0f;
+    const float panelY = 40.0f;
+    const float panelW = 240.0f;
+    const float panelH = 192.0f;
+    const float cellStepX = g_invCellStep;
+    const float cellStepY = g_invCellStep;
+    const float cellSize = g_invCellStep - 1.0f;
+    const float cellX0 = 125.0f + (cellStepX * 0.5f);
+    const float cellY0 = 93.0f - (cellStepY * 0.25f);
+    const float hotbarY = 209.0f;
+    const float sliderX = 372.0f;
+    const float sliderW = 16.0f;
+    const float iconSize = 16.0f;
+    const float iconPad = (cellSize - iconSize) * 0.5f;
+    const float stretchRightPerCol = g_invStretchX;
+    const float compressUpPerRow = g_invCompressY;
+    auto gridX = [&](int col) { return cellX0 + col * cellStepX + col * stretchRightPerCol; };
+    auto gridY = [&](int row) { return cellY0 + row * cellStepY - row * compressUpPerRow; };
+    if (g_guiInvCreativeTex.data) {
+      // inventory_creative.png in this port is authored as full PSP screen with transparent margins
+      hudDrawTexture(g_guiInvCreativeTex, 0.0f, 0.0f, 480.0f, 272.0f);
+    } else {
+      hudDrawRect(panelX, panelY, panelW, panelH, 0xC0202020);
+      hudDrawRect(panelX + 2, panelY + 2, panelW - 4, panelH - 4, 0x90000000);
+    }
 
-    int start = g_inventoryScroll * cols;
-    for (int r = 0; r < rows; ++r) {
-      for (int c = 0; c < cols; ++c) {
-        int idx = start + r * cols + c;
-        float sx = panelX + 5 + c * cell;
-        float sy = panelY + 5 + r * cell;
-        hudDrawRect(sx, sy, cell - 3, cell - 3, 0x90303030);
+    int base = g_creativeInv.creativePage() * itemsPerPage;
+    for (int r = 0; r < creativeRows; ++r) {
+      for (int c = 0; c < creativeCols; ++c) {
+        int idx = base + r * creativeCols + c;
+        float sx = gridX(c);
+        float sy = gridY(r);
+        if (g_guiCellTex.data) hudDrawTexture(g_guiCellTex, sx, sy, cellSize, cellSize);
+        else hudDrawRect(sx, sy, cellSize, cellSize, 0x90303030);
         if (idx >= invCount) continue;
-        bool selected = (idx == g_inventorySel && !g_hotbarAssignMode);
-        if (selected) hudDrawRect(sx - 1, sy - 1, cell - 1, cell - 1, 0xD0FFFFFF);
-        uint8_t id = g_inventoryItems[idx];
+        uint8_t id = g_creativeInv.visibleItemAt(idx);
         int tx, ty;
         hudGetIconTile(id, tx, ty);
-        hudDrawTile(g_atlas, tx, ty, sx + 3, sy + 3, cell - 9);
+        hudDrawTile(g_atlas, tx, ty, sx + iconPad, sy + iconPad, iconSize);
       }
     }
 
-    if (g_pendingInventoryItem >= 0) {
-      float px = panelX + panelW * 0.5f - 14.0f;
-      float py = panelY - 22.0f;
-      hudDrawRect(px - 2, py - 2, 28, 28, 0xD0FFFFFF);
-      uint8_t id = g_inventoryItems[g_pendingInventoryItem];
+    for (int i = 0; i < 9; ++i) {
+      float sx = gridX(i);
+      if (g_guiCellTex.data) hudDrawTexture(g_guiCellTex, sx, hotbarY, cellSize, cellSize);
+      else hudDrawRect(sx, hotbarY, cellSize, cellSize, 0x90303030);
+      uint8_t id = g_creativeInv.hotbarAt(i);
       int tx, ty;
       hudGetIconTile(id, tx, ty);
-      hudDrawTile(g_atlas, tx, ty, px, py, 24);
+      hudDrawTile(g_atlas, tx, ty, sx + iconPad, hotbarY + iconPad, iconSize);
     }
 
-    if (g_inventorySel >= 0 && g_inventorySel < invCount) {
-      g_inventoryHoverName = getBlockDisplayName(g_inventoryItems[g_inventorySel]);
-      float nameX = panelX + 4.0f;
-      float nameY = panelY + panelH + 8.0f;
-      hudDrawRect(panelX - 2.0f, nameY - 2.0f, panelW + 4.0f, 14.0f, 0x90000000);
-      hudDrawText5x7(nameX, nameY, g_inventoryHoverName, 0xFFFFFFFF, 1.5f);
+    if (g_guiSliderTex.data) hudDrawTexture(g_guiSliderTex, sliderX, cellY0, sliderW, 5.0f * cellStepY + (cellSize - cellStepY));
+    else hudDrawRect(sliderX, cellY0, sliderW, 5.0f * cellStepY + (cellSize - cellStepY), 0x70303030);
+    hudDrawRect(sliderX, hotbarY, cellSize, cellSize, 0x90503030); // destroy slot
+    hudDrawText5x7(sliderX + 6.0f, hotbarY + 6.0f, "X", 0xFFFFFFFF, 1.0f);
+
+    if (g_creativeInv.cursorHasItem()) {
+      hudDrawRect(panelX + panelW + 10.0f, panelY + 8.0f, 20.0f, 20.0f, 0xD0FFFFFF);
+      int tx, ty;
+      hudGetIconTile(g_creativeInv.cursorItem(), tx, ty);
+      hudDrawTile(g_atlas, tx, ty, panelX + panelW + 11.5f, panelY + 9.5f, 17.0f);
     }
 
-    // Scroll indicator
-    int maxScroll = (invCount + cols - 1) / cols - rows;
-    if (maxScroll < 0) maxScroll = 0;
-    if (maxScroll > 0) {
-      float t = (float)g_inventoryScroll / (float)maxScroll;
-      hudDrawRect(panelX + panelW + 6, panelY, 4, panelH, 0x70303030);
-      hudDrawRect(panelX + panelW + 6, panelY + t * (panelH - 32), 4, 32, 0xD0FFFFFF);
+    float cursorX = gridX(g_creativeInv.cursorX());
+    float cursorY = (g_creativeInv.cursorY() < 5) ? gridY(g_creativeInv.cursorY()) : hotbarY;
+    if (g_guiCursorTex.data) hudDrawTexture(g_guiCursorTex, cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f);
+    else hudDrawRect(cursorX - 1.0f, cursorY - 1.0f, cellSize + 2.0f, cellSize + 2.0f, 0xD0FFFFFF);
+
+    if (g_creativeInv.cursorY() < 5 && g_creativeInv.cursorX() < 10) {
+      int hover = base + g_creativeInv.cursorY() * creativeCols + g_creativeInv.cursorX();
+      if (hover >= 0 && hover < invCount) g_inventoryHoverName = getBlockDisplayName(g_creativeInv.visibleItemAt(hover));
+    } else if (g_creativeInv.cursorY() == 5 && g_creativeInv.cursorX() < 9) {
+      g_inventoryHoverName = getBlockDisplayName(g_creativeInv.hotbarAt(g_creativeInv.cursorX()));
+    } else if (g_creativeInv.cursorY() == 5 && g_creativeInv.cursorX() == 10) {
+      g_inventoryHoverName = "Delete Slot";
+    } else if (g_creativeInv.cursorX() == 10) {
+      g_inventoryHoverName = "Page Slider";
+    }
+    if (g_inventoryHoverName) {
+      hudDrawRect(panelX, panelY + panelH + 4.0f, panelW, 14.0f, 0x90000000);
+      hudDrawText5x7(panelX + 3.0f, panelY + panelH + 6.0f, g_inventoryHoverName, 0xFFFFFFFF, 1.3f);
+    }
+
+    int maxPage = (invCount / itemsPerPage);
+    if (maxPage > 0) {
+      float t = (float)g_creativeInv.creativePage() / (float)maxPage;
+      hudDrawRect(sliderX + 4.0f, 102.0f + t * 84.0f, 8.0f, 16.0f, 0xD0FFFFFF);
+    }
+
+    const float tabX0 = 96.0f;
+    const float tabY0 = 40.0f;
+    const float tabW = 30.0f;
+    const float tabStep = 30.0f;
+    hudDrawRect(tabX0 + g_creativeInv.category() * tabStep, tabY0, tabW, 32.0f, 0x50FFFF00);
+
+    // Replace baked "Building Blocks" texture text with runtime pixel-font category label.
+    const float titleX = 206.0f;
+    const float titleY = 73.0f;
+    hudDrawRect(titleX - 2.0f, titleY - 2.0f, 120.0f, 12.0f, 0x90D0D0D0);
+    hudDrawText5x7(titleX, titleY, g_creativeInv.categoryName(), 0xFF303030, 1.1f);
+    if (g_invTuneMode) {
+      hudDrawRect(86.0f, 242.0f, 308.0f, 14.0f, 0xA0000000);
+      hudDrawText5x7(90.0f, 245.0f, "TUNE: DPAD=WARP  L/R TRIG=SPACING  TRI=SAVE", 0xFFFFFFFF, 1.0f);
     }
   }
 }
@@ -356,6 +420,25 @@ static bool worldFileExists(int slot) {
 static void worldMetaPathForSlot(int slot, char *out, int outSize) {
   if (!out || outSize <= 0) return;
   snprintf(out, outSize, "%s/world%d.meta", kWorldDir, slot + 1);
+}
+
+static void loadInventoryLayoutConfig() {
+  FILE *f = fopen(kInvLayoutCfgPath, "rb");
+  if (!f) return;
+  float step = 0.0f, sx = 0.0f, cy = 0.0f;
+  if (fscanf(f, "%f %f %f", &step, &sx, &cy) == 3) {
+    if (step >= 16.0f && step <= 28.0f) g_invCellStep = step;
+    if (sx >= -2.0f && sx <= 2.0f) g_invStretchX = sx;
+    if (cy >= -2.0f && cy <= 2.0f) g_invCompressY = cy;
+  }
+  fclose(f);
+}
+
+static void saveInventoryLayoutConfig() {
+  FILE *f = fopen(kInvLayoutCfgPath, "wb");
+  if (!f) return;
+  fprintf(f, "%.3f %.3f %.3f\n", g_invCellStep, g_invStretchX, g_invCompressY);
+  fclose(f);
 }
 
 static void setStatusMessage(const char *msg, float seconds, uint32_t color = 0xFFFFFFFF) {
@@ -400,6 +483,9 @@ static bool savePlayerAndInventoryForSlot(int slot) {
   if (!f) return false;
 
   const char header[8] = {'M','C','P','S','P','M','E','T'};
+  int hotbarSel = g_creativeInv.hotbarSel();
+  uint8_t hotbar[9];
+  for (int i = 0; i < 9; ++i) hotbar[i] = g_creativeInv.hotbarAt(i);
   if (fwrite(header, 1, sizeof(header), f) != sizeof(header) ||
       fwrite(&g_player.x, sizeof(g_player.x), 1, f) != 1 ||
       fwrite(&g_player.y, sizeof(g_player.y), 1, f) != 1 ||
@@ -407,8 +493,8 @@ static bool savePlayerAndInventoryForSlot(int slot) {
       fwrite(&g_player.yaw, sizeof(g_player.yaw), 1, f) != 1 ||
       fwrite(&g_player.pitch, sizeof(g_player.pitch), 1, f) != 1 ||
       fwrite(&g_player.isFlying, sizeof(g_player.isFlying), 1, f) != 1 ||
-      fwrite(&g_hotbarSel, sizeof(g_hotbarSel), 1, f) != 1 ||
-      fwrite(g_hotbar, sizeof(g_hotbar[0]), 9, f) != 9) {
+      fwrite(&hotbarSel, sizeof(hotbarSel), 1, f) != 1 ||
+      fwrite(hotbar, sizeof(hotbar[0]), 9, f) != 9) {
     fclose(f);
     return false;
   }
@@ -429,20 +515,23 @@ static bool loadPlayerAndInventoryFromPath(const char *path) {
     return false;
   }
 
+  int hotbarSel = 0;
+  uint8_t hotbar[9];
   if (fread(&g_player.x, sizeof(g_player.x), 1, f) != 1 ||
       fread(&g_player.y, sizeof(g_player.y), 1, f) != 1 ||
       fread(&g_player.z, sizeof(g_player.z), 1, f) != 1 ||
       fread(&g_player.yaw, sizeof(g_player.yaw), 1, f) != 1 ||
       fread(&g_player.pitch, sizeof(g_player.pitch), 1, f) != 1 ||
       fread(&g_player.isFlying, sizeof(g_player.isFlying), 1, f) != 1 ||
-      fread(&g_hotbarSel, sizeof(g_hotbarSel), 1, f) != 1 ||
-      fread(g_hotbar, sizeof(g_hotbar[0]), 9, f) != 9) {
+      fread(&hotbarSel, sizeof(hotbarSel), 1, f) != 1 ||
+      fread(hotbar, sizeof(hotbar[0]), 9, f) != 9) {
     fclose(f);
     return false;
   }
 
-  if (g_hotbarSel < 0 || g_hotbarSel > 8) g_hotbarSel = 0;
-  g_heldBlock = g_hotbar[g_hotbarSel];
+  g_creativeInv.setHotbarSel(hotbarSel);
+  for (int i = 0; i < 9; ++i) g_creativeInv.setHotbarAt(i, hotbar[i]);
+  g_heldBlock = g_creativeInv.heldBlock();
   fclose(f);
   return true;
 }
@@ -535,6 +624,10 @@ static bool game_init() {
   g_level = new Level();
   g_skyRenderer = new SkyRenderer(g_level);
   g_cloudRenderer = new CloudRenderer(g_level);
+  g_guiInvCreativeTex.load(kTexInvCreativePath);
+  g_guiCursorTex.load(kTexCursorPath);
+  g_guiSliderTex.load(kTexSliderPath);
+  g_guiCellTex.load(kTexCellPath);
 
   // Init chunk renderer
   g_chunkRenderer = new ChunkRenderer(g_atlas);
@@ -543,11 +636,12 @@ static bool game_init() {
   // Load existing world or generate a new one.
   sceIoMkdir("ms0:/PSP/GAME/MinecraftPSP", 0777);
   sceIoMkdir(kWorldDir, 0777);
+  loadInventoryLayoutConfig();
   refreshWorldSlots();
 
   // Player start position
   resetPlayerStateForNewWorld();
-  g_heldBlock = g_hotbar[g_hotbarSel];
+  g_heldBlock = g_creativeInv.heldBlock();
   return true;
 }
 
@@ -675,7 +769,7 @@ static void game_update(float dt) {
     if (g_tickAlpha < 0.0f) g_tickAlpha = 0.0f;
     if (g_tickAlpha > 1.0f) g_tickAlpha = 1.0f;
 
-    if (!g_inventoryOpen && !g_pauseOpen) {
+    if (!g_creativeInv.isOpen() && !g_pauseOpen) {
       g_autoSaveTimer += dt;
       if (g_autoSaveTimer >= kAutoSaveIntervalSec) {
         if (saveWorldAndMetaForSlot(g_worldSlot)) {
@@ -702,7 +796,7 @@ static void game_update(float dt) {
   float lookSpeed = 120.0f * dt;
 
   // Rotation with right stick (Face Buttons)
-  if (!g_inventoryOpen) {
+  if (!g_creativeInv.isOpen()) {
     float lx = PSPInput_StickX(1);
     float ly = PSPInput_StickY(1);
     g_player.yaw += lx * lookSpeed;
@@ -822,53 +916,45 @@ static void game_update(float dt) {
   // Inventory/hotbar controls
   if ((PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && PSPInput_JustPressed(PSP_CTRL_RTRIGGER)) ||
       (PSPInput_IsHeld(PSP_CTRL_RTRIGGER) && PSPInput_JustPressed(PSP_CTRL_LTRIGGER))) {
-    g_inventoryOpen = true;
-    g_hotbarAssignMode = false;
-    g_pendingInventoryItem = -1;
+    g_creativeInv.open();
   }
-  if (g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_CIRCLE)) {
-    g_inventoryOpen = false;
-    g_hotbarAssignMode = false;
-    g_pendingInventoryItem = -1;
+  if (g_creativeInv.isOpen() && PSPInput_JustPressed(PSP_CTRL_CIRCLE)) {
+    g_creativeInv.close();
+    g_invTuneMode = false;
   }
-  if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) {
-    if (g_hotbarAssignMode || !g_inventoryOpen) g_hotbarSel = (g_hotbarSel + 1) % 9;
-    else {
-      int invCount = (int)(sizeof(g_inventoryItems) / sizeof(g_inventoryItems[0]));
-      g_inventorySel = (g_inventorySel + 1) % invCount;
-    }
-  }
-  if (PSPInput_JustPressed(PSP_CTRL_LEFT)) {
-    if (g_hotbarAssignMode || !g_inventoryOpen) g_hotbarSel = (g_hotbarSel + 8) % 9;
-    else {
-      int invCount = (int)(sizeof(g_inventoryItems) / sizeof(g_inventoryItems[0]));
-      g_inventorySel = (g_inventorySel + invCount - 1) % invCount;
-    }
-  }
-  if (g_inventoryOpen) {
-    const int invCount = (int)(sizeof(g_inventoryItems) / sizeof(g_inventoryItems[0]));
-    const int cols = 6;
-    const int rows = 4;
-    const int maxScroll = ((invCount + cols - 1) / cols > rows) ? ((invCount + cols - 1) / cols - rows) : 0;
-    if (PSPInput_IsHeld(PSP_CTRL_TRIANGLE)) {
-      if (PSPInput_JustPressed(PSP_CTRL_UP) && g_inventoryScroll > 0) g_inventoryScroll--;
-      if (PSPInput_JustPressed(PSP_CTRL_DOWN) && g_inventoryScroll < maxScroll) g_inventoryScroll++;
-    } else if (!g_hotbarAssignMode) {
-      if (PSPInput_JustPressed(PSP_CTRL_UP)) g_inventorySel = (g_inventorySel - cols + invCount) % invCount;
-      if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_inventorySel = (g_inventorySel + cols) % invCount;
-    }
-    if (PSPInput_JustPressed(PSP_CTRL_CROSS)) {
-      if (!g_hotbarAssignMode) {
-        g_pendingInventoryItem = g_inventorySel;
-        g_hotbarAssignMode = true;
-      } else if (g_pendingInventoryItem >= 0) {
-        g_hotbar[g_hotbarSel] = g_inventoryItems[g_pendingInventoryItem];
-        g_hotbarAssignMode = false;
-        g_pendingInventoryItem = -1;
+  if (PSPInput_JustPressed(PSP_CTRL_RIGHT) && !g_creativeInv.isOpen()) g_creativeInv.cycleHotbarRight();
+  if (PSPInput_JustPressed(PSP_CTRL_LEFT) && !g_creativeInv.isOpen()) g_creativeInv.cycleHotbarLeft();
+  if (g_creativeInv.isOpen()) {
+    if (PSPInput_JustPressed(PSP_CTRL_TRIANGLE)) {
+      if (!g_invTuneMode) {
+        g_invTuneMode = true;
+      } else {
+        g_invTuneMode = false;
+        saveInventoryLayoutConfig();
       }
     }
+    if (g_invTuneMode) {
+      const float kWarpStep = 0.05f;
+      const float kSpacingStep = 0.10f;
+      if (PSPInput_JustPressed(PSP_CTRL_LEFT)) g_invStretchX -= kWarpStep;
+      if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) g_invStretchX += kWarpStep;
+      if (PSPInput_JustPressed(PSP_CTRL_UP)) g_invCompressY += kWarpStep;
+      if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_invCompressY -= kWarpStep;
+      if (PSPInput_JustPressed(PSP_CTRL_LTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_RTRIGGER)) g_invCellStep -= kSpacingStep;
+      if (PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_LTRIGGER)) g_invCellStep += kSpacingStep;
+      if (g_invCellStep < 16.0f) g_invCellStep = 16.0f;
+      if (g_invCellStep > 28.0f) g_invCellStep = 28.0f;
+    } else {
+      if (PSPInput_JustPressed(PSP_CTRL_LTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_RTRIGGER)) g_creativeInv.prevCategory();
+      if (PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_LTRIGGER)) g_creativeInv.nextCategory();
+      if (PSPInput_JustPressed(PSP_CTRL_RIGHT)) g_creativeInv.moveRight();
+      if (PSPInput_JustPressed(PSP_CTRL_LEFT)) g_creativeInv.moveLeft();
+      if (PSPInput_JustPressed(PSP_CTRL_UP)) g_creativeInv.moveUp();
+      if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_creativeInv.moveDown();
+      if (PSPInput_JustPressed(PSP_CTRL_CROSS)) g_creativeInv.pressCross();
+    }
   }
-  g_heldBlock = g_hotbar[g_hotbarSel];
+  g_heldBlock = g_creativeInv.heldBlock();
 
   // Block breaking
   bool doBreak = false;
@@ -894,7 +980,7 @@ static void game_update(float dt) {
   }
 
   // Place block
-  if (!g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && g_hitResult.hit) {
+  if (!g_creativeInv.isOpen() && PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && g_hitResult.hit) {
     int px = g_hitResult.nx;
     int py = g_hitResult.ny;
     int pz = g_hitResult.nz;
