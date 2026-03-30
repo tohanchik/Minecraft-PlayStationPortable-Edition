@@ -12,6 +12,7 @@ PSP_EBOOT_TITLE  = Minecraft PSP
 
 # Surse
 SRCS = src/main.cpp \
+       src/game/CreativeInventory.cpp \
        src/world/Random.cpp \
        src/world/Mth.cpp \
        src/world/Vec3.cpp \
@@ -59,4 +60,3 @@ LIBS = -lstdc++ \
 
 # Build
 include $(PSPSDK)/lib/build.mak
-
