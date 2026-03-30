@@ -124,6 +124,11 @@ void CreativeInventory::pressCross() {
   }
 }
 
+void CreativeInventory::clearCursorSelection() {
+  m_cursorHasItem = false;
+  m_cursorItem = BLOCK_AIR;
+}
+
 uint8_t CreativeInventory::heldBlock() const { return m_hotbar[m_hotbarSel]; }
 
 int CreativeInventory::hotbarSel() const { return m_hotbarSel; }
