@@ -104,15 +104,15 @@ static float g_autoSaveTimer = 0.0f;
 static const float kAutoSaveIntervalSec = 60.0f;
 static bool g_invTuneMode = false;
 static bool g_invTuneHotbar = false;
-static float g_invCellStep = 21.100f;
-static float g_invStretchX = 1.000f;
-static float g_invCompressY = 1.150f;
+static float g_invCellStep = 21.300f;
+static float g_invStretchX = 0.750f;
+static float g_invCompressY = 1.250f;
 static float g_invOffsetX = -10.084f;
-static float g_invOffsetY = 4.736f;
-static float g_invHotbarStepX = 21.100f;
-static float g_invHotbarStretchX = 1.000f;
+static float g_invOffsetY = 5.204f;
+static float g_invHotbarStepX = 21.300f;
+static float g_invHotbarStretchX = 0.800f;
 static float g_invHotbarOffsetX = 0.0f;
-static float g_invHotbarOffsetY = -6.0f;
+static float g_invHotbarOffsetY = -13.350f;
 
 struct HudColVert {
   uint32_t color;
