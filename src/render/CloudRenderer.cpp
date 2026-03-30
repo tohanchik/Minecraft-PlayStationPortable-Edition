@@ -53,8 +53,9 @@ CloudRenderer::~CloudRenderer() {
 
 void CloudRenderer::renderClouds(float playerX, float playerY, float playerZ,
                                  float alpha) {
-  float cloudSpeed = 0.5f;
-  float cloudHeight = 140.0f;
+  // MCPE-like values from LevelRenderer cloud pass.
+  float cloudSpeed = 0.03f;
+  float cloudHeight = 128.33f;
   float cloudThickness = 8.0f;
   float qS = 12.0f;
   int drawDistance = 48;
