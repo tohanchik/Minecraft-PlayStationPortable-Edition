@@ -6,8 +6,8 @@
 
 class Random;
 
-// Ticks per day
-static const long long TICKS_PER_DAY = 24000LL;
+// Ticks per day (MCPE 0.6.1 uses 20 TPS * 60 * 16 = 19200)
+static const long long TICKS_PER_DAY = 19200LL;
 
 class Level {
 public:
@@ -68,6 +68,8 @@ public:
 
   void tick();
   void setSimulationFocus(int wx, int wy, int wz, int radius);
+  bool saveToFile(const char *path) const;
+  bool loadFromFile(const char *path);
 
 private:
   void tickWater();
