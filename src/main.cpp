@@ -6,6 +6,7 @@
 #include <pspdisplay.h>
 #include <pspgu.h>
 #include <pspgum.h>
+#include <pspiofilemgr.h>
 #include <pspkernel.h>
 #include <psppower.h>
 
@@ -22,7 +23,10 @@
 #include "world/Mth.h"
 #include "world/Random.h"
 #include "world/Raycast.h"
+#include <ctype.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 // PSP module metadata
 PSP_MODULE_INFO("MinecraftPSP", PSP_MODULE_USER, 1, 0);
@@ -74,6 +78,16 @@ static int g_inventorySel = 0;
 static int g_inventoryScroll = 0;
 static bool g_hotbarAssignMode = false;
 static int g_pendingInventoryItem = -1;
+static const char *g_inventoryHoverName = nullptr;
+static float g_tickAlpha = 0.0f;
+static const char *kWorldDir = "ms0:/PSP/GAME/MinecraftPSP/worlds";
+static const int kMaxWorldSlots = 8;
+static int g_worldSlot = 0;
+static bool g_worldExists[kMaxWorldSlots] = {false};
+static bool g_pauseOpen = false;
+static int g_pauseSel = 0; // 0 continue, 1 save
+static bool g_inMainMenu = true;
+static int g_menuSlotSel = 0;
 static uint8_t g_hotbar[9] = {
   BLOCK_COBBLESTONE, BLOCK_STONE, BLOCK_DIRT, BLOCK_WOOD_PLANK, BLOCK_GLASS,
   BLOCK_SAND, BLOCK_LOG, BLOCK_LEAVES, BLOCK_WATER_STILL
@@ -125,8 +139,14 @@ static inline void hudDrawTile(TextureAtlas *atlas, int tx, int ty, float x, flo
 }
 
 static inline void hudGetIconTile(uint8_t id, int &tx, int &ty) {
-  tx = g_blockUV[id].top_x;
-  ty = g_blockUV[id].top_y;
+  // Some blocks read better in inventory from side view.
+  if (id == BLOCK_LOG || id == BLOCK_BOOKSHELF || id == BLOCK_PUMPKIN) {
+    tx = g_blockUV[id].side_x;
+    ty = g_blockUV[id].side_y;
+  } else {
+    tx = g_blockUV[id].top_x;
+    ty = g_blockUV[id].top_y;
+  }
   if (tx == 0 && ty == 0 && id != BLOCK_GRASS) {
     tx = g_blockUV[id].side_x;
     ty = g_blockUV[id].side_y;
@@ -137,7 +157,86 @@ static inline void hudGetIconTile(uint8_t id, int &tx, int &ty) {
   }
 }
 
+static const char* getBlockDisplayName(uint8_t id) {
+  switch (id) {
+    case BLOCK_STONE: return "Stone";
+    case BLOCK_GRASS: return "Grass";
+    case BLOCK_DIRT: return "Dirt";
+    case BLOCK_COBBLESTONE: return "Cobblestone";
+    case BLOCK_WOOD_PLANK: return "Wood Planks";
+    case BLOCK_SAND: return "Sand";
+    case BLOCK_GRAVEL: return "Gravel";
+    case BLOCK_LOG: return "Log";
+    case BLOCK_LEAVES: return "Leaves";
+    case BLOCK_GLASS: return "Glass";
+    case BLOCK_SANDSTONE: return "Sandstone";
+    case BLOCK_WOOL: return "Wool";
+    case BLOCK_GOLD_BLOCK: return "Gold Block";
+    case BLOCK_IRON_BLOCK: return "Iron Block";
+    case BLOCK_BRICK: return "Bricks";
+    case BLOCK_BOOKSHELF: return "Bookshelf";
+    case BLOCK_MOSSY_COBBLE: return "Mossy Cobblestone";
+    case BLOCK_OBSIDIAN: return "Obsidian";
+    case BLOCK_GLOWSTONE: return "Glowstone";
+    case BLOCK_PUMPKIN: return "Pumpkin";
+    case BLOCK_FLOWER: return "Dandelion";
+    case BLOCK_ROSE: return "Rose";
+    case BLOCK_SAPLING: return "Sapling";
+    case BLOCK_TALLGRASS: return "Tall Grass";
+    case BLOCK_WATER_STILL: return "Water";
+    case BLOCK_WATER_FLOW: return "Flowing Water";
+    default: return "Unknown Block";
+  }
+}
+
+static uint8_t glyphRow5x7(char ch, int row) {
+  switch (ch) {
+    case 'A': { static const uint8_t r[7] = {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}; return r[row]; }
+    case 'B': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}; return r[row]; }
+    case 'C': { static const uint8_t r[7] = {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E}; return r[row]; }
+    case 'D': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E}; return r[row]; }
+    case 'E': { static const uint8_t r[7] = {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}; return r[row]; }
+    case 'F': { static const uint8_t r[7] = {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}; return r[row]; }
+    case 'G': { static const uint8_t r[7] = {0x0E,0x11,0x10,0x17,0x11,0x11,0x0E}; return r[row]; }
+    case 'H': { static const uint8_t r[7] = {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}; return r[row]; }
+    case 'I': { static const uint8_t r[7] = {0x1F,0x04,0x04,0x04,0x04,0x04,0x1F}; return r[row]; }
+    case 'K': { static const uint8_t r[7] = {0x11,0x12,0x14,0x18,0x14,0x12,0x11}; return r[row]; }
+    case 'L': { static const uint8_t r[7] = {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}; return r[row]; }
+    case 'M': { static const uint8_t r[7] = {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}; return r[row]; }
+    case 'N': { static const uint8_t r[7] = {0x11,0x11,0x19,0x15,0x13,0x11,0x11}; return r[row]; }
+    case 'O': { static const uint8_t r[7] = {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}; return r[row]; }
+    case 'P': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}; return r[row]; }
+    case 'R': { static const uint8_t r[7] = {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}; return r[row]; }
+    case 'S': { static const uint8_t r[7] = {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}; return r[row]; }
+    case 'T': { static const uint8_t r[7] = {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}; return r[row]; }
+    case 'U': { static const uint8_t r[7] = {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}; return r[row]; }
+    case 'V': { static const uint8_t r[7] = {0x11,0x11,0x11,0x11,0x11,0x0A,0x04}; return r[row]; }
+    case 'W': { static const uint8_t r[7] = {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}; return r[row]; }
+    case 'Y': { static const uint8_t r[7] = {0x11,0x11,0x0A,0x04,0x04,0x04,0x04}; return r[row]; }
+    case ' ': return 0;
+    default: return 0;
+  }
+}
+
+static void hudDrawText5x7(float x, float y, const char *text, uint32_t color, float scale) {
+  if (!text) return;
+  float penX = x;
+  for (const char *p = text; *p; ++p) {
+    char ch = (char)toupper((unsigned char)(*p));
+    for (int row = 0; row < 7; ++row) {
+      uint8_t bits = glyphRow5x7(ch, row);
+      for (int col = 0; col < 5; ++col) {
+        if (bits & (1 << (4 - col))) {
+          hudDrawRect(penX + col * scale, y + row * scale, scale, scale, color);
+        }
+      }
+    }
+    penX += 6.0f * scale;
+  }
+}
+
 static void drawHotbarHUD() {
+  g_inventoryHoverName = nullptr;
   const float slot = 24.0f;
   const float pad = 3.0f;
   const float totalW = 9 * slot + 8 * pad;
@@ -194,6 +293,14 @@ static void drawHotbarHUD() {
       hudDrawTile(g_atlas, tx, ty, px, py, 24);
     }
 
+    if (g_inventorySel >= 0 && g_inventorySel < invCount) {
+      g_inventoryHoverName = getBlockDisplayName(g_inventoryItems[g_inventorySel]);
+      float nameX = panelX + 4.0f;
+      float nameY = panelY + panelH + 8.0f;
+      hudDrawRect(panelX - 2.0f, nameY - 2.0f, panelW + 4.0f, 14.0f, 0x90000000);
+      hudDrawText5x7(nameX, nameY, g_inventoryHoverName, 0xFFFFFFFF, 1.5f);
+    }
+
     // Scroll indicator
     int maxScroll = (invCount + cols - 1) / cols - rows;
     if (maxScroll < 0) maxScroll = 0;
@@ -209,8 +316,55 @@ static inline bool isWaterId(uint8_t id) {
   return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
 }
 
+static void worldPathForSlot(int slot, char *out, int outSize) {
+  if (!out || outSize <= 0) return;
+  snprintf(out, outSize, "%s/world%d.mcpw", kWorldDir, slot + 1);
+}
+
+static bool worldFileExists(int slot) {
+  char path[128];
+  worldPathForSlot(slot, path, sizeof(path));
+  FILE *f = fopen(path, "rb");
+  if (!f) return false;
+  fclose(f);
+  return true;
+}
+
+static void refreshWorldSlots() {
+  for (int i = 0; i < kMaxWorldSlots; ++i) g_worldExists[i] = worldFileExists(i);
+}
+
+static bool loadWorldSlot(int slot) {
+  char path[128];
+  worldPathForSlot(slot, path, sizeof(path));
+  if (!g_level) return false;
+  if (!g_level->loadFromFile(path)) return false;
+  g_worldSlot = slot;
+  return true;
+}
+
+static void createWorldSlot(int slot) {
+  if (!g_level) return;
+  uint64_t t = sceKernelGetSystemTimeWide();
+  Random rng((int64_t)t ^ ((int64_t)slot * 341873128712LL));
+  g_level->generate(&rng);
+  char path[128];
+  worldPathForSlot(slot, path, sizeof(path));
+  g_level->saveToFile(path);
+  g_worldSlot = slot;
+  refreshWorldSlots();
+}
+
+static void deleteWorldSlot(int slot) {
+  char path[128];
+  worldPathForSlot(slot, path, sizeof(path));
+  sceIoRemove(path);
+  refreshWorldSlots();
+}
+
 // Initialization
 static bool game_init() {
+  pspDebugScreenInit();
   // Overclock PSP to max for performance
   scePowerSetClockFrequency(333, 333, 166);
 
@@ -237,9 +391,10 @@ static bool game_init() {
   g_chunkRenderer = new ChunkRenderer(g_atlas);
   g_chunkRenderer->setLevel(g_level);
 
-  // Generate a test world
-  Random rng(12345LL);
-  g_level->generate(&rng);
+  // Load existing world or generate a new one.
+  sceIoMkdir("ms0:/PSP/GAME/MinecraftPSP", 0777);
+  sceIoMkdir(kWorldDir, 0777);
+  refreshWorldSlots();
 
   // Player start position
   g_player.x = 8.0f;
@@ -258,9 +413,58 @@ static bool game_init() {
 // Game loop update
 static void game_update(float dt) {
   PSPInput_Update();
+
+  if (g_inMainMenu) {
+    if (PSPInput_JustPressed(PSP_CTRL_UP)) g_menuSlotSel = (g_menuSlotSel + kMaxWorldSlots - 1) % kMaxWorldSlots;
+    if (PSPInput_JustPressed(PSP_CTRL_DOWN)) g_menuSlotSel = (g_menuSlotSel + 1) % kMaxWorldSlots;
+    if (PSPInput_JustPressed(PSP_CTRL_CROSS)) {
+      if (g_worldExists[g_menuSlotSel] && loadWorldSlot(g_menuSlotSel)) {
+        g_inMainMenu = false;
+      }
+    }
+    if (PSPInput_JustPressed(PSP_CTRL_TRIANGLE)) {
+      createWorldSlot(g_menuSlotSel);
+      g_inMainMenu = false;
+    }
+    if (PSPInput_JustPressed(PSP_CTRL_SQUARE)) {
+      deleteWorldSlot(g_menuSlotSel);
+    }
+    return;
+  }
+
+  if (PSPInput_JustPressed(PSP_CTRL_START) && !g_pauseOpen) {
+    g_pauseOpen = true;
+    g_pauseSel = 0;
+  } else if (g_pauseOpen) {
+    if (PSPInput_JustPressed(PSP_CTRL_UP) || PSPInput_JustPressed(PSP_CTRL_DOWN)) g_pauseSel = 1 - g_pauseSel;
+    if (PSPInput_JustPressed(PSP_CTRL_CIRCLE)) g_pauseOpen = false;
+    if (PSPInput_JustPressed(PSP_CTRL_CROSS)) {
+      if (g_pauseSel == 0) {
+        g_pauseOpen = false;
+      } else {
+        char path[128];
+        worldPathForSlot(g_worldSlot, path, sizeof(path));
+        if (g_level) g_level->saveToFile(path);
+        g_pauseOpen = false;
+      }
+    }
+    return;
+  }
+
   if (g_level) {
-    g_level->setSimulationFocus((int)floorf(g_player.x), (int)floorf(g_player.y), (int)floorf(g_player.z), 24);
-    g_level->tick();
+    static float s_levelTickAccum = 0.0f;
+    const float tickStep = 1.0f / 20.0f; // Minecraft-like 20 TPS
+    s_levelTickAccum += dt;
+    int ticks = 0;
+    while (s_levelTickAccum >= tickStep && ticks < 5) {
+      g_level->setSimulationFocus((int)floorf(g_player.x), (int)floorf(g_player.y), (int)floorf(g_player.z), 24);
+      g_level->tick();
+      s_levelTickAccum -= tickStep;
+      ticks++;
+    }
+    g_tickAlpha = s_levelTickAccum / tickStep;
+    if (g_tickAlpha < 0.0f) g_tickAlpha = 0.0f;
+    if (g_tickAlpha > 1.0f) g_tickAlpha = 1.0f;
   }
 
   bool inWater = false;
@@ -469,7 +673,7 @@ static void game_update(float dt) {
   }
 
   // Place block
-  if (!g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_UP) && g_hitResult.hit) {
+  if (!g_inventoryOpen && PSPInput_JustPressed(PSP_CTRL_RTRIGGER) && !PSPInput_IsHeld(PSP_CTRL_LTRIGGER) && g_hitResult.hit) {
     int px = g_hitResult.nx;
     int py = g_hitResult.ny;
     int pz = g_hitResult.nz;
@@ -505,7 +709,9 @@ static void game_update(float dt) {
                      pz >= playerMinZ && pz <= playerMaxZ);
 
     uint8_t targetBlock = g_level->getBlock(px, py, pz);
-    bool canReplaceTarget = (targetBlock == BLOCK_AIR || (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
+    bool canReplaceTarget = (targetBlock == BLOCK_AIR ||
+                             isWaterId(targetBlock) ||
+                             (!g_blockProps[targetBlock].isSolid() && !g_blockProps[targetBlock].isLiquid()));
 
     if (canPlace && !overlaps && canReplaceTarget) {
       g_level->setBlock(px, py, pz, g_heldBlock);
@@ -516,6 +722,29 @@ static void game_update(float dt) {
 }
 
 static void game_render() {
+  if (g_inMainMenu) {
+    PSPRenderer_BeginFrame(0xFF101018);
+    sceGuDisable(GU_DEPTH_TEST);
+    sceGuDisable(GU_CULL_FACE);
+    sceGuEnable(GU_BLEND);
+    sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+
+    hudDrawText5x7(24.0f, 20.0f, "MINECRAFT PSP - WORLDS", 0xFFFFFFFF, 2.0f);
+    hudDrawText5x7(24.0f, 42.0f, "X LOAD  TRIANGLE NEW  SQUARE DELETE", 0xFFC0C0C0, 1.2f);
+    for (int i = 0; i < kMaxWorldSlots; ++i) {
+      float y = 70.0f + i * 20.0f;
+      if (i == g_menuSlotSel) hudDrawRect(18.0f, y - 2.0f, 320.0f, 16.0f, 0x80606060);
+      char line[64];
+      snprintf(line, sizeof(line), "WORLD%d  %s", i + 1, g_worldExists[i] ? "EXISTS" : "EMPTY");
+      hudDrawText5x7(24.0f, y, line, 0xFFFFFFFF, 1.5f);
+    }
+    sceGuDisable(GU_BLEND);
+    sceGuEnable(GU_CULL_FACE);
+    sceGuEnable(GU_DEPTH_TEST);
+    PSPRenderer_EndFrame();
+    return;
+  }
+
   float _tod = g_level->getTimeOfDay();
 
   // Camera setup
@@ -564,7 +793,7 @@ static void game_render() {
   }
 
   if (g_cloudRenderer)
-    g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, 0.0f);
+    g_cloudRenderer->renderClouds(g_player.x, g_player.y, g_player.z, g_tickAlpha);
 
   // 2D HUD pass
   sceGuDisable(GU_DEPTH_TEST);
@@ -572,6 +801,13 @@ static void game_render() {
   sceGuEnable(GU_BLEND);
   sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
   drawHotbarHUD();
+  if (g_pauseOpen) {
+    hudDrawRect(120.0f, 72.0f, 240.0f, 120.0f, 0xB0000000);
+    hudDrawText5x7(180.0f, 88.0f, "PAUSE", 0xFFFFFFFF, 2.0f);
+    hudDrawRect(150.0f, (g_pauseSel == 0) ? 118.0f : 144.0f, 180.0f, 18.0f, 0x80505050);
+    hudDrawText5x7(164.0f, 122.0f, "CONTINUE", 0xFFFFFFFF, 1.5f);
+    hudDrawText5x7(164.0f, 148.0f, "SAVE GAME", 0xFFFFFFFF, 1.5f);
+  }
   sceGuDisable(GU_BLEND);
   sceGuEnable(GU_CULL_FACE);
   sceGuEnable(GU_DEPTH_TEST);
