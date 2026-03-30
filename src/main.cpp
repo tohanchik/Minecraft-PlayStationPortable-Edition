@@ -209,6 +209,7 @@ static const char* getBlockDisplayName(uint8_t id) {
     case BLOCK_MOSSY_COBBLE: return "Mossy Cobblestone";
     case BLOCK_OBSIDIAN: return "Obsidian";
     case BLOCK_GLOWSTONE: return "Glowstone";
+    case BLOCK_NETHERRACK: return "Netherrack";
     case BLOCK_PUMPKIN: return "Pumpkin";
     case BLOCK_FLOWER: return "Dandelion";
     case BLOCK_ROSE: return "Rose";
@@ -216,6 +217,25 @@ static const char* getBlockDisplayName(uint8_t id) {
     case BLOCK_TALLGRASS: return "Tall Grass";
     case BLOCK_WATER_STILL: return "Water";
     case BLOCK_WATER_FLOW: return "Flowing Water";
+    case BLOCK_LAVA_STILL: return "Lava";
+    case BLOCK_LAVA_FLOW: return "Flowing Lava";
+    case BLOCK_GOLD_ORE: return "Gold Ore";
+    case BLOCK_IRON_ORE: return "Iron Ore";
+    case BLOCK_COAL_ORE: return "Coal Ore";
+    case BLOCK_DIAMOND_ORE: return "Diamond Ore";
+    case BLOCK_DIAMOND_BLOCK: return "Diamond Block";
+    case BLOCK_LAPIS_ORE: return "Lapis Ore";
+    case BLOCK_REDSTONE_ORE: return "Redstone Ore";
+    case BLOCK_TNT: return "TNT";
+    case BLOCK_CHEST: return "Chest";
+    case BLOCK_CRAFTING_TABLE: return "Crafting Table";
+    case BLOCK_FURNACE: return "Furnace";
+    case BLOCK_CACTUS: return "Cactus";
+    case BLOCK_SNOW: return "Snow Layer";
+    case BLOCK_SNOW_BLOCK: return "Snow Block";
+    case BLOCK_ICE: return "Ice";
+    case BLOCK_CLAY: return "Clay";
+    case BLOCK_REEDS: return "Sugar Cane";
     default: return "Unknown Block";
   }
 }
