@@ -72,8 +72,10 @@ public:
   bool loadFromFile(const char *path);
 
 private:
-  void tickWater();
+  void tickLiquid(bool lava);
   bool isWaterBlock(uint8_t id) const;
+  bool isLavaBlock(uint8_t id) const;
+  bool isLiquidBlock(uint8_t id) const;
   int waterIndex(int wx, int wy, int wz) const;
 
   Chunk *m_chunks[WORLD_CHUNKS_X][WORLD_CHUNKS_Z];
@@ -81,12 +83,14 @@ private:
   long long m_time = 6000LL;
   float m_lastSunBrightness = 1.0f;
   int m_waterTickAccum = 0;
+  int m_lavaTickAccum = 0;
   int m_simFocusX = -1;
   int m_simFocusY = -1;
   int m_simFocusZ = -1;
   int m_simFocusRadius = 24;
   int m_simFocusYRadius = 24;
   bool m_waterDirty = true;
+  bool m_lavaDirty = true;
   int m_waterWakeX = -1;
   int m_waterWakeY = -1;
   int m_waterWakeZ = -1;
