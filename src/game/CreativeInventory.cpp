@@ -1,0 +1,150 @@
+#include "game/CreativeInventory.h"
+#include "world/Blocks.h"
+
+static const uint8_t kInventoryItems[] = {
+  BLOCK_STONE, BLOCK_GRASS, BLOCK_DIRT, BLOCK_COBBLESTONE,
+  BLOCK_WOOD_PLANK, BLOCK_SAND, BLOCK_GRAVEL, BLOCK_LOG,
+  BLOCK_LEAVES, BLOCK_GLASS, BLOCK_SANDSTONE, BLOCK_WOOL,
+  BLOCK_GOLD_BLOCK, BLOCK_IRON_BLOCK, BLOCK_BRICK, BLOCK_BOOKSHELF,
+  BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN, BLOCK_GLOWSTONE, BLOCK_PUMPKIN,
+  BLOCK_FLOWER, BLOCK_ROSE, BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_WATER_STILL,
+  BLOCK_WATER_FLOW, BLOCK_LAVA_STILL, BLOCK_LAVA_FLOW, BLOCK_GOLD_ORE, BLOCK_IRON_ORE,
+  BLOCK_COAL_ORE, BLOCK_DIAMOND_ORE, BLOCK_DIAMOND_BLOCK, BLOCK_LAPIS_ORE, BLOCK_REDSTONE_ORE,
+  BLOCK_TNT, BLOCK_CHEST, BLOCK_CRAFTING_TABLE, BLOCK_FURNACE, BLOCK_CACTUS,
+  BLOCK_SNOW, BLOCK_SNOW_BLOCK, BLOCK_ICE, BLOCK_CLAY, BLOCK_REEDS
+};
+
+struct CatRange { int start; int end; const char *name; };
+static const CatRange kCatRanges[] = {
+  {0, 11, "Blocks"},
+  {12, 19, "Ores"},
+  {20, 24, "Plants"},
+  {25, 27, "Liquids"},
+  {28, 34, "Minerals"},
+  {35, 39, "Utility"},
+  {40, 44, "Nature"},
+  {0, 44, "All"}
+};
+
+CreativeInventory::CreativeInventory()
+  : m_open(false), m_hotbarSel(0), m_cursorX(0), m_cursorY(0), m_creativePage(0),
+    m_usingSlider(false), m_cursorHasItem(false), m_cursorItem(BLOCK_AIR), m_category(0) {
+  m_hotbar[0] = BLOCK_COBBLESTONE;
+  m_hotbar[1] = BLOCK_STONE;
+  m_hotbar[2] = BLOCK_DIRT;
+  m_hotbar[3] = BLOCK_WOOD_PLANK;
+  m_hotbar[4] = BLOCK_GLASS;
+  m_hotbar[5] = BLOCK_SAND;
+  m_hotbar[6] = BLOCK_LOG;
+  m_hotbar[7] = BLOCK_LEAVES;
+  m_hotbar[8] = BLOCK_WATER_STILL;
+}
+
+void CreativeInventory::open() { m_open = true; m_cursorX = 0; m_cursorY = 0; m_creativePage = 0; }
+void CreativeInventory::close() { m_open = false; }
+bool CreativeInventory::isOpen() const { return m_open; }
+
+void CreativeInventory::cycleHotbarRight() { m_hotbarSel = (m_hotbarSel + 1) % 9; }
+void CreativeInventory::cycleHotbarLeft() { m_hotbarSel = (m_hotbarSel + 8) % 9; }
+
+void CreativeInventory::moveRight() { if (m_cursorX < 9) m_cursorX++; }
+void CreativeInventory::moveLeft() { if (m_cursorX > 0) m_cursorX--; }
+
+void CreativeInventory::moveDown() {
+  m_usingSlider = (m_cursorX == 9 && m_cursorY < 5);
+  if (m_usingSlider) {
+    if (m_creativePage < maxPage()) m_creativePage++;
+  } else if (m_cursorY < 5) {
+    m_cursorY++;
+  }
+}
+
+void CreativeInventory::moveUp() {
+  m_usingSlider = (m_cursorX == 9 && m_cursorY < 5);
+  if (m_usingSlider) {
+    if (m_creativePage > 0) m_creativePage--;
+  } else if (m_cursorY > 0) {
+    m_cursorY--;
+  }
+}
+
+void CreativeInventory::pressCross() {
+  if (m_cursorY == 5 && m_cursorX == 9) {
+    if (m_cursorHasItem) {
+      m_cursorHasItem = false;
+      m_cursorItem = BLOCK_AIR;
+    }
+    return;
+  }
+
+  if (m_cursorY == 5) {
+    m_hotbarSel = m_cursorX;
+    uint8_t &slot = m_hotbar[m_cursorX];
+    if (!m_cursorHasItem) {
+      if (slot != BLOCK_AIR) {
+        m_cursorItem = slot;
+        m_cursorHasItem = true;
+        slot = BLOCK_AIR;
+      }
+    } else {
+      uint8_t old = slot;
+      slot = m_cursorItem;
+      if (old == BLOCK_AIR) {
+        m_cursorHasItem = false;
+        m_cursorItem = BLOCK_AIR;
+      } else {
+        m_cursorItem = old;
+      }
+    }
+    return;
+  }
+
+  int idx = m_creativePage * 25 + m_cursorY * 4 + m_cursorX;
+  if (m_cursorX < 4 && idx >= 0 && idx < categoryItemCount() && !m_cursorHasItem) {
+    m_cursorItem = categoryItemAt(idx);
+    m_cursorHasItem = true;
+  }
+}
+
+uint8_t CreativeInventory::heldBlock() const { return m_hotbar[m_hotbarSel]; }
+
+int CreativeInventory::hotbarSel() const { return m_hotbarSel; }
+void CreativeInventory::setHotbarSel(int sel) { m_hotbarSel = (sel < 0) ? 0 : (sel > 8 ? 8 : sel); }
+int CreativeInventory::cursorX() const { return m_cursorX; }
+int CreativeInventory::cursorY() const { return m_cursorY; }
+int CreativeInventory::creativePage() const { return m_creativePage; }
+int CreativeInventory::category() const { return m_category; }
+const char *CreativeInventory::categoryName() const { return kCatRanges[m_category].name; }
+void CreativeInventory::prevCategory() {
+  m_category = (m_category + 7) % 8;
+  m_creativePage = 0;
+}
+void CreativeInventory::nextCategory() {
+  m_category = (m_category + 1) % 8;
+  m_creativePage = 0;
+}
+bool CreativeInventory::usingSlider() const { return m_usingSlider; }
+bool CreativeInventory::cursorHasItem() const { return m_cursorHasItem; }
+uint8_t CreativeInventory::cursorItem() const { return m_cursorItem; }
+
+uint8_t CreativeInventory::hotbarAt(int idx) const { return (idx >= 0 && idx < 9) ? m_hotbar[idx] : BLOCK_AIR; }
+void CreativeInventory::setHotbarAt(int idx, uint8_t id) { if (idx >= 0 && idx < 9) m_hotbar[idx] = id; }
+int CreativeInventory::visibleItemCount() const { return categoryItemCount(); }
+uint8_t CreativeInventory::visibleItemAt(int idx) const { return categoryItemAt(idx); }
+
+int CreativeInventory::inventoryItemCount() { return (int)(sizeof(kInventoryItems) / sizeof(kInventoryItems[0])); }
+uint8_t CreativeInventory::inventoryItemAt(int idx) {
+  if (idx < 0 || idx >= inventoryItemCount()) return BLOCK_AIR;
+  return kInventoryItems[idx];
+}
+
+int CreativeInventory::maxPage() const { return categoryItemCount() / 25; }
+int CreativeInventory::categoryItemCount() const {
+  const CatRange &r = kCatRanges[m_category];
+  return r.end - r.start + 1;
+}
+uint8_t CreativeInventory::categoryItemAt(int idx) const {
+  const CatRange &r = kCatRanges[m_category];
+  if (idx < 0 || idx >= categoryItemCount()) return BLOCK_AIR;
+  return kInventoryItems[r.start + idx];
+}
