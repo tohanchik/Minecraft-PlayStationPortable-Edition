@@ -247,7 +247,7 @@ uint32_t TileRenderer::applyLightToFace(uint32_t baseColor, float brightness) {
 }
 
 bool TileRenderer::tesselateBlockInWorld(uint8_t id, int lx, int ly, int lz, int cx, int cz) {
-  if (id == BLOCK_TALLGRASS || id == BLOCK_FLOWER || id == BLOCK_ROSE || id == BLOCK_SAPLING) {
+  if (id == BLOCK_TALLGRASS || id == BLOCK_FLOWER || id == BLOCK_ROSE || id == BLOCK_SAPLING || id == BLOCK_REEDS) {
     return tesselateCrossInWorld(id, lx, ly, lz, cx, cz);
   }
 
