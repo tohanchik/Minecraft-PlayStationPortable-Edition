@@ -63,8 +63,24 @@ void Blocks_Init() {
   DEF_PROPS(BLOCK_LOG, 20, 0, 15, SOLID);
   DEF_PROPS(BLOCK_LEAVES, 2, 0, 1, SOLID | TRANSP);
   DEF_PROPS(BLOCK_GLASS, 3, 0, 0, SOLID | TRANSP);
+  DEF_PROPS(BLOCK_LAPIS_ORE, 30, 0, 15, SOLID);
   DEF_PROPS(BLOCK_SANDSTONE, 8, 0, 15, SOLID);
   DEF_PROPS(BLOCK_WOOL, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_ORANGE, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_MAGENTA, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_LIGHT_BLUE, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_YELLOW, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_LIME, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_PINK, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_GRAY, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_LIGHT_GRAY, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_CYAN, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_PURPLE, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_BLUE, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_BROWN, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_GREEN, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_RED, 8, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_WOOL_BLACK, 8, 0, 15, SOLID);
   DEF_PROPS(BLOCK_TALLGRASS, 0, 0, 0, TRANSP);
   DEF_PROPS(BLOCK_FLOWER, 0, 0, 0, TRANSP);
   DEF_PROPS(BLOCK_ROSE, 0, 0, 0, TRANSP);
@@ -93,6 +109,8 @@ void Blocks_Init() {
   DEF_PROPS(BLOCK_LADDER, 4, 0, 0, TRANSP);
   DEF_PROPS(BLOCK_REEDS, 0, 0, 0, TRANSP);
   DEF_PROPS(BLOCK_PUMPKIN, 10, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_REDSTONE_ORE, 30, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_SOULSAND, 5, 0, 15, SOLID);
 
   // Custom hitboxes
   auto setBounds = [](uint8_t id, float mx, float my, float mz, float Mx, float My, float Mz) {
@@ -106,7 +124,8 @@ void Blocks_Init() {
   setBounds(BLOCK_SAPLING,   0.2f, 0.0f, 0.2f, 0.8f, 0.8f, 0.8f);
   setBounds(BLOCK_TORCH,     0.4f, 0.0f, 0.4f, 0.6f, 0.6f, 0.6f);
   setBounds(BLOCK_CHEST,     0.0625f, 0.0f, 0.0625f, 0.9375f, 0.875f, 0.9375f);
-  setBounds(BLOCK_SNOW,      0.0f, 0.0f, 0.0f, 1.0f, 0.125f, 1.0f);
+  setBounds(BLOCK_REEDS,     0.2f, 0.0f, 0.2f, 0.8f, 1.0f, 0.8f);
+  setBounds(BLOCK_SNOW,      0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f);
 
   // === UV Atlas (terrain.png 16x16 grid) ===
   //       id                top      side     bottom
@@ -125,15 +144,31 @@ void Blocks_Init() {
   DEF_UV(BLOCK_SAPLING, 15, 0, 15, 0, 15, 0);
   DEF_UV(BLOCK_LEAVES, 4, 3, 4, 3, 4, 3);
   DEF_UV(BLOCK_GLASS, 1, 3, 1, 3, 1, 3);
+  DEF_UV(BLOCK_LAPIS_ORE, 0, 10, 0, 10, 0, 10);
   DEF_UV(BLOCK_SANDSTONE, 0, 12, 0, 11, 0, 13);
   DEF_UV(BLOCK_WOOL, 0, 4, 0, 4, 0, 4);
+  DEF_UV(BLOCK_WOOL_ORANGE, 2, 13, 2, 13, 2, 13);
+  DEF_UV(BLOCK_WOOL_MAGENTA, 2, 12, 2, 12, 2, 12);
+  DEF_UV(BLOCK_WOOL_LIGHT_BLUE, 2, 11, 2, 11, 2, 11);
+  DEF_UV(BLOCK_WOOL_YELLOW, 2, 10, 2, 10, 2, 10);
+  DEF_UV(BLOCK_WOOL_LIME, 2, 9, 2, 9, 2, 9);
+  DEF_UV(BLOCK_WOOL_PINK, 2, 8, 2, 8, 2, 8);
+  DEF_UV(BLOCK_WOOL_GRAY, 2, 7, 2, 7, 2, 7);
+  DEF_UV(BLOCK_WOOL_LIGHT_GRAY, 1, 14, 1, 14, 1, 14);
+  DEF_UV(BLOCK_WOOL_CYAN, 1, 13, 1, 13, 1, 13);
+  DEF_UV(BLOCK_WOOL_PURPLE, 1, 12, 1, 12, 1, 12);
+  DEF_UV(BLOCK_WOOL_BLUE, 1, 11, 1, 11, 1, 11);
+  DEF_UV(BLOCK_WOOL_BROWN, 1, 10, 1, 10, 1, 10);
+  DEF_UV(BLOCK_WOOL_GREEN, 1, 9, 1, 9, 1, 9);
+  DEF_UV(BLOCK_WOOL_RED, 1, 8, 1, 8, 1, 8);
+  DEF_UV(BLOCK_WOOL_BLACK, 1, 7, 1, 7, 1, 7);
   DEF_UV(BLOCK_GOLD_BLOCK, 7, 1, 7, 1, 7, 1);
   DEF_UV(BLOCK_IRON_BLOCK, 6, 1, 6, 1, 6, 1);
   DEF_UV(BLOCK_BRICK, 7, 0, 7, 0, 7, 0);
   DEF_UV(BLOCK_BOOKSHELF, 4, 0, 3, 2, 4, 0);
   DEF_UV(BLOCK_TNT, 9, 0, 8, 0, 10, 0);
   DEF_UV(BLOCK_OBSIDIAN, 5, 2, 5, 2, 5, 2);
-  DEF_UV(BLOCK_DIAMOND_ORE, 3, 3, 3, 3, 3, 3);
+  DEF_UV(BLOCK_DIAMOND_ORE, 2, 3, 2, 3, 2, 3);
   DEF_UV(BLOCK_DIAMOND_BLOCK, 8, 1, 8, 1, 8, 1);
   DEF_UV(BLOCK_CRAFTING_TABLE, 11, 2, 11, 3, 4, 0);
   DEF_UV(BLOCK_FARMLAND, 7, 5, 3, 0, 2, 0); // top=farmland,side=dirt
@@ -141,12 +176,16 @@ void Blocks_Init() {
   DEF_UV(BLOCK_SNOW, 2, 4, 2, 4, 2, 4);
   DEF_UV(BLOCK_ICE, 3, 4, 3, 4, 3, 4);
   DEF_UV(BLOCK_SNOW_BLOCK, 2, 4, 4, 4, 2, 4);
+  DEF_UV(BLOCK_CACTUS, 5, 4, 6, 4, 7, 4);
   DEF_UV(BLOCK_NETHERRACK, 7, 6, 7, 6, 7, 6);
+  DEF_UV(BLOCK_SOULSAND, 8, 6, 8, 6, 8, 6);
   DEF_UV(BLOCK_GLOWSTONE, 9, 6, 9, 6, 9, 6);
   DEF_UV(BLOCK_CHEST, 10, 1, 9, 1, 10, 1);
   DEF_UV(BLOCK_MOSSY_COBBLE, 4, 2, 4, 2, 4, 2);
   DEF_UV(BLOCK_CLAY, 8, 4, 8, 4, 8, 4);
   DEF_UV(BLOCK_PUMPKIN, 6, 6, 7, 7, 6, 6);
+  DEF_UV(BLOCK_REEDS, 9, 4, 9, 4, 9, 4);
+  DEF_UV(BLOCK_REDSTONE_ORE, 3, 3, 3, 3, 3, 3);
   // Cross-sprite plants (UV tile used for all quads in the X-pattern)
   DEF_UV(BLOCK_TALLGRASS, 7, 2, 7, 2, 7, 2);    // tallgrass col=7, row=2
   DEF_UV(BLOCK_FLOWER, 13, 0, 13, 0, 13, 0); // dandelion col=13, row=0
@@ -155,7 +194,7 @@ void Blocks_Init() {
   // still = col13,row12 ; flowing/side = col14,row12
   DEF_UV(BLOCK_WATER_STILL, 13, 12, 14, 12, 14, 12);
   DEF_UV(BLOCK_WATER_FLOW, 14, 12, 14, 12, 14, 12);
-  // Lava - lava_still = col15,row13; lava_flow = col15,row14
-  DEF_UV(BLOCK_LAVA_STILL, 15, 13, 15, 13, 15, 13);
-  DEF_UV(BLOCK_LAVA_FLOW, 15, 14, 15, 14, 15, 14);
+  // Lava (from provided atlas map): row15,col14 => x=13,y=14
+  DEF_UV(BLOCK_LAVA_STILL, 13, 14, 13, 14, 13, 14);
+  DEF_UV(BLOCK_LAVA_FLOW, 13, 14, 13, 14, 13, 14);
 }
