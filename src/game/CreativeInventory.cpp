@@ -47,8 +47,25 @@ bool CreativeInventory::isOpen() const { return m_open; }
 void CreativeInventory::cycleHotbarRight() { m_hotbarSel = (m_hotbarSel + 1) % 9; }
 void CreativeInventory::cycleHotbarLeft() { m_hotbarSel = (m_hotbarSel + 8) % 9; }
 
-void CreativeInventory::moveRight() { if (m_cursorX < 10) m_cursorX++; }
-void CreativeInventory::moveLeft() { if (m_cursorX > 0) m_cursorX--; }
+void CreativeInventory::moveRight() {
+  if (m_cursorY == 5) {
+    // On hotbar row skip the unused x=9 slot: jump from slot 8 directly to delete slot (x=10).
+    if (m_cursorX < 8) m_cursorX++;
+    else if (m_cursorX == 8) m_cursorX = 10;
+  } else if (m_cursorX < 10) {
+    m_cursorX++;
+  }
+}
+
+void CreativeInventory::moveLeft() {
+  if (m_cursorY == 5) {
+    // On hotbar row skip the unused x=9 slot in reverse as well.
+    if (m_cursorX == 10) m_cursorX = 8;
+    else if (m_cursorX > 0 && m_cursorX <= 8) m_cursorX--;
+  } else if (m_cursorX > 0) {
+    m_cursorX--;
+  }
+}
 
 void CreativeInventory::moveDown() {
   m_usingSlider = (m_cursorX == 10);
