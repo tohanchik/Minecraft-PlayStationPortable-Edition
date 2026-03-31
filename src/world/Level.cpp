@@ -45,7 +45,7 @@ void Level::tickWater() {
     uint8_t depth;
   };
   std::vector<WaterOp> ops;
-  const int maxWaterCellsPerTick = 512;
+  const int maxWaterCellsPerTick = 256;
   int processedWaterCells = 0;
 
   const int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
@@ -155,6 +155,7 @@ void Level::tickWater() {
     if (nextDepth <= 7) {
       uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
       if (spreadDepth <= 7 && !flowedDown) {
+        const bool useShortestPathPriority = (id == BLOCK_WATER_STILL || nextDepth <= 1);
         int costs[4] = {999, 999, 999, 999};
         int bestCost = 999;
         bool canSpread[4] = {false, false, false, false};
@@ -163,7 +164,11 @@ void Level::tickWater() {
           if (!inBounds(nx, y, nz)) continue;
           if (!canFlowInto(nx, y, nz)) continue;
           canSpread[i] = true;
-          costs[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCost(nx, y, nz, 1, i);
+          if (useShortestPathPriority) {
+            costs[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCost(nx, y, nz, 1, i);
+          } else {
+            costs[i] = hasDownwardExit(nx, y, nz) ? 0 : 1;
+          }
           if (costs[i] < bestCost) bestCost = costs[i];
         }
         for (int i = 0; i < 4; ++i) {
@@ -207,7 +212,8 @@ void Level::tickWater() {
       markDirty(op.x, op.y, op.z);
     }
     setWaterDepth(op.x, op.y, op.z, op.depth);
-    queueWaterNeighborhood(op.x, op.y, op.z);
+    queueWaterCell(op.x, op.y, op.z);
+    if (cur != op.id) queueWaterNeighborhood(op.x, op.y, op.z);
   }
 
   bool hasPending = m_waterQueueHead < m_waterQueue.size();
@@ -495,7 +501,25 @@ bool Level::loadFromFile(const char *path) {
   for (int y = 0; y < CHUNK_SIZE_Y; ++y) {
     for (int z = 0; z < WORLD_CHUNKS_Z * CHUNK_SIZE_Z; ++z) {
       for (int x = 0; x < WORLD_CHUNKS_X * CHUNK_SIZE_X; ++x) {
-        if (isWaterBlock(getBlock(x, y, z))) queueWaterCell(x, y, z);
+        uint8_t id = getBlock(x, y, z);
+        if (!isWaterBlock(id)) continue;
+        if (id == BLOCK_WATER_FLOW) {
+          queueWaterCell(x, y, z);
+          continue;
+        }
+        bool frontier = false;
+        static const int fx[5] = {-1, 1, 0, 0, 0};
+        static const int fy[5] = {0, 0, 0, 0, -1};
+        static const int fz[5] = {0, 0, -1, 1, 0};
+        for (int i = 0; i < 5; ++i) {
+          int nx = x + fx[i], ny = y + fy[i], nz = z + fz[i];
+          uint8_t nid = getBlock(nx, ny, nz);
+          if (!isWaterBlock(nid)) {
+            frontier = true;
+            break;
+          }
+        }
+        if (frontier) queueWaterCell(x, y, z);
       }
     }
   }
