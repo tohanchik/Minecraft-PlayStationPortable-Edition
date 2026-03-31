@@ -139,10 +139,6 @@ void Level::tickWater() {
       for (int x = simMinX; x <= simMaxX; ++x) {
         uint8_t id = getBlock(x, y, z);
         if (!isWaterBlock(id)) continue;
-        if (++processedWaterCells > maxWaterCellsPerTick) {
-          budgetReached = true;
-          break;
-        }
 
         // Skip fully enclosed still-water interior (large lakes/oceans) to reduce
         // heavy per-block work near big water bodies.
@@ -155,6 +151,10 @@ void Level::tickWater() {
               isWaterBlock(getBlock(x, y, z - 1)) &&
               isWaterBlock(getBlock(x, y, z + 1));
           if (waterAbove && waterBelow && waterSides) continue;
+        }
+        if (++processedWaterCells > maxWaterCellsPerTick) {
+          budgetReached = true;
+          break;
         }
         uint8_t curDepth = getWaterDepth(x, y, z);
         if (curDepth == 0xFF) curDepth = (id == BLOCK_WATER_STILL) ? 0 : 1;
@@ -186,14 +186,11 @@ void Level::tickWater() {
             if (nd != 0xFF && nd < neighborMin) neighborMin = nd;
           }
         }
-        uint8_t belowId = getBlock(x, y - 1, z);
-        bool supportBelow = (y == 0) || g_blockProps[belowId].isSolid() || isWaterBlock(belowId);
         uint8_t nextDepth = curDepth;
         if (id == BLOCK_WATER_STILL) {
           nextDepth = 0;
         } else {
           if (hasWaterAbove) nextDepth = 1;
-          else if (sourceNeighbors >= 2 && supportBelow) nextDepth = 0;
           else if (neighborMin < 7) nextDepth = (uint8_t)(neighborMin + 1);
           else nextDepth = 8;
         }
@@ -201,7 +198,9 @@ void Level::tickWater() {
         if (nextDepth <= 7) {
           uint8_t spreadDepth = (id == BLOCK_WATER_STILL) ? 1 : (uint8_t)(nextDepth + 1);
           if (spreadDepth <= 7 && !flowedDown) {
-            bool useShortestPathPriority = isWaterBlock(id);
+            // Use path prioritization for flowing water and for source-level
+            // spread so the first step also prefers the best downhill route.
+            bool useShortestPathPriority = (id == BLOCK_WATER_FLOW) || (spreadDepth == 1);
             int costs[4] = {999, 999, 999, 999};
             int bestCost = 999;
             bool canSpread[4] = {false, false, false, false};
@@ -257,7 +256,9 @@ void Level::tickWater() {
     }
     setWaterDepth(op.x, op.y, op.z, op.depth);
   }
-  m_waterDirty = !ops.empty();
+  // Keep sim active if we hit the per-tick budget; otherwise large enclosed
+  // reservoirs can consume scans without producing ops and stall future updates.
+  m_waterDirty = budgetReached || !ops.empty();
 }
 
 Level::Level() {
