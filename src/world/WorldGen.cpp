@@ -10,10 +10,14 @@
 
 // Get terrain height
 int WorldGen::getTerrainHeight(int wx, int wz, int64_t seed) {
-  // 4 noise octaves, 64 block scale
-  float n = NoiseGen::octaveNoise(wx / 64.0f, wz / 64.0f, seed);
-  // Range: 40..60 (base level 50 = sea level)
-  return 40 + (int)(n * 20.0f);
+  // MCPE-like layered terrain blend: broad continents + detail hills.
+  float base = NoiseGen::octaveNoise(wx / 192.0f, wz / 192.0f, seed ^ 0x51A9B17D);
+  float hills = NoiseGen::octaveNoise(wx / 72.0f, wz / 72.0f, seed ^ 0x7F4A7C15);
+  float detail = NoiseGen::octaveNoise(wx / 28.0f, wz / 28.0f, seed ^ 0x1D872B41);
+  int h = 64 + (int)(base * 22.0f + hills * 16.0f + detail * 7.0f);
+  if (h < 4) h = 4;
+  if (h > CHUNK_SIZE_Y - 2) h = CHUNK_SIZE_Y - 2;
+  return h;
 }
 
 // Generate chunk
@@ -51,9 +55,10 @@ void WorldGen::generateChunk(
         out[lx][lz][y] = block;
       }
 
-      // Water at sea level (50) if surface is below it
-      if (surfaceY < 50) {
-        for (int y = surfaceY + 1; y <= 50; y++) {
+      // Water at sea level (MCPE-style ~62).
+      const int seaLevel = 62;
+      if (surfaceY < seaLevel) {
+        for (int y = surfaceY + 1; y <= seaLevel; y++) {
           if (y < CHUNK_SIZE_Y)
             out[lx][lz][y] = BLOCK_WATER_STILL;
         }
@@ -136,4 +141,3 @@ void WorldGen::generateChunk(
     }
   }
 }
-
