@@ -81,6 +81,7 @@ static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
 static CreativeInventory g_creativeInv;
 static const char *g_inventoryHoverName = nullptr;
 static float g_tickAlpha = 0.0f;
+static float g_tpsDisplay = 20.0f;
 static const char *kWorldDir = "ms0:/PSP/GAME/MinecraftPSP/worlds";
 static const char *kInvLayoutCfgPath = "ms0:/PSP/GAME/MinecraftPSP/inv_layout.cfg";
 static const char *kInvTuneCfgPath = "ms0:/PSP/GAME/MinecraftPSP/inv_tune_mode.cfg";
@@ -890,6 +891,12 @@ static void game_update(float dt) {
       s_levelTickAccum -= tickStep;
       ticks++;
     }
+    if (dt > 0.0001f) {
+      float instTps = (float)ticks / dt;
+      g_tpsDisplay = g_tpsDisplay * 0.85f + instTps * 0.15f;
+      if (g_tpsDisplay > 20.0f) g_tpsDisplay = 20.0f;
+      if (g_tpsDisplay < 0.0f) g_tpsDisplay = 0.0f;
+    }
     g_tickAlpha = s_levelTickAccum / tickStep;
     if (g_tickAlpha < 0.0f) g_tickAlpha = 0.0f;
     if (g_tickAlpha > 1.0f) g_tickAlpha = 1.0f;
@@ -1346,6 +1353,12 @@ static void game_render() {
   if (g_statusTimer > 0.0f && g_statusText[0]) {
     hudDrawRect(120.0f, 12.0f, 240.0f, 16.0f, 0xA0000000);
     hudDrawText5x7(128.0f, 16.0f, g_statusText, g_statusColor, 1.1f);
+  }
+  {
+    char tpsText[32];
+    snprintf(tpsText, sizeof(tpsText), "TPS: %.1f", g_tpsDisplay);
+    hudDrawRect(8.0f, 8.0f, 78.0f, 14.0f, 0x90000000);
+    hudDrawText5x7(12.0f, 11.0f, tpsText, 0xFF80FF80, 1.0f);
   }
   sceGuDisable(GU_BLEND);
   sceGuEnable(GU_CULL_FACE);
