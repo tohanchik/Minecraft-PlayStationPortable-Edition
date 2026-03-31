@@ -394,7 +394,7 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
     int sy = visibleChunks[i].subChunkIdx;
     if (c->transFancyTriCount[sy] == 0 || !c->transFancyVertices[sy]) continue;
     float distSqHoriz = visibleChunks[i].distSqHoriz;
-    if (distSqHoriz > FANCY_LOD_DIST * FANCY_LOD_DIST || camY > 80.0f) continue;
+    if (distSqHoriz > FANCY_LOD_DIST * FANCY_LOD_DIST || camY > 128.0f) continue;
     setChunkMatrix(c);
     sceGumDrawArray(GU_TRIANGLES,
                     GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
