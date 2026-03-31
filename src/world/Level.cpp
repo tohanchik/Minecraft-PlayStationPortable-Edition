@@ -257,7 +257,11 @@ void Level::tickWater() {
     }
     setWaterDepth(op.x, op.y, op.z, op.depth);
   }
-  m_waterDirty = !ops.empty();
+  // Keep simulation alive when we hit the per-tick budget even if this pass
+  // produced no block updates yet. Without this, large bodies of still water
+  // can be scanned in interior-first order, generate zero ops, and incorrectly
+  // stop future water ticks before the shoreline/frontier is processed.
+  m_waterDirty = budgetReached || !ops.empty();
 }
 
 Level::Level() {
