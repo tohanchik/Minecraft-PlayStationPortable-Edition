@@ -4,7 +4,7 @@
 #include <stdlib.h>
 
 Chunk::Chunk() : cx(0), cz(0) {
-  for(int i=0; i<4; i++) {
+  for(int i=0; i<SUBCHUNK_COUNT; i++) {
     dirty[i] = true;
     opaqueVertices[i] = nullptr;
     transVertices[i] = nullptr;
@@ -24,7 +24,7 @@ Chunk::Chunk() : cx(0), cz(0) {
 }
 
 Chunk::~Chunk() {
-  for(int i=0; i<4; i++) {
+  for(int i=0; i<SUBCHUNK_COUNT; i++) {
     if (opaqueVertices[i]) { free(opaqueVertices[i]); opaqueVertices[i] = nullptr; }
     if (transVertices[i]) { free(transVertices[i]); transVertices[i] = nullptr; }
     if (transFancyVertices[i]) { free(transFancyVertices[i]); transFancyVertices[i] = nullptr; }
@@ -53,7 +53,7 @@ void Chunk::setBlock(int x, int y, int z, uint8_t id) {
   int sy = y / 16;
   dirty[sy] = true;
   if (y % 16 == 0 && sy > 0) dirty[sy - 1] = true;
-  if (y % 16 == 15 && sy < 3) dirty[sy + 1] = true;
+  if (y % 16 == 15 && sy < SUBCHUNK_COUNT - 1) dirty[sy + 1] = true;
 }
 
 uint8_t Chunk::getSkyLight(int x, int y, int z) const {
@@ -75,5 +75,5 @@ void Chunk::setLight(int x, int y, int z, uint8_t sky, uint8_t block) {
   int sy = y / 16;
   dirty[sy] = true;
   if (y % 16 == 0 && sy > 0) dirty[sy - 1] = true;
-  if (y % 16 == 15 && sy < 3) dirty[sy + 1] = true;
+  if (y % 16 == 15 && sy < SUBCHUNK_COUNT - 1) dirty[sy + 1] = true;
 }
