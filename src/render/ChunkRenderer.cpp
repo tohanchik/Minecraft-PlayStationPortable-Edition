@@ -12,10 +12,10 @@
 
 #define MAX_VERTS_PER_SUB_CHUNK 8000
 
-static CraftPSPVertex g_opaqueBuf[4][MAX_VERTS_PER_SUB_CHUNK];
-static CraftPSPVertex g_transBuf[4][MAX_VERTS_PER_SUB_CHUNK];
-static CraftPSPVertex g_transFancyBuf[4][MAX_VERTS_PER_SUB_CHUNK];
-static CraftPSPVertex g_emitBuf[4][MAX_VERTS_PER_SUB_CHUNK];
+static CraftPSPVertex g_opaqueBuf[SUBCHUNK_COUNT][MAX_VERTS_PER_SUB_CHUNK];
+static CraftPSPVertex g_transBuf[SUBCHUNK_COUNT][MAX_VERTS_PER_SUB_CHUNK];
+static CraftPSPVertex g_transFancyBuf[SUBCHUNK_COUNT][MAX_VERTS_PER_SUB_CHUNK];
+static CraftPSPVertex g_emitBuf[SUBCHUNK_COUNT][MAX_VERTS_PER_SUB_CHUNK];
 
 ChunkRenderer::ChunkRenderer(TextureAtlas *atlas)
     : m_level(nullptr), m_atlas(atlas), m_compileStep(0), m_compileChunk(nullptr), m_compileSy(-1) {}
@@ -53,7 +53,7 @@ void ChunkRenderer::processCompileQueue(float camX, float camY, float camZ) {
       for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++) {
         Chunk *c = m_level->getChunk(cx, cz);
         if (c) {
-          for (int sy = 0; sy < 4; sy++) {
+          for (int sy = 0; sy < SUBCHUNK_COUNT; sy++) {
             if (c->dirty[sy]) {
               float chunkCenterX = c->cx * CHUNK_SIZE_X + CHUNK_SIZE_X / 2.0f;
               float chunkCenterZ = c->cz * CHUNK_SIZE_Z + CHUNK_SIZE_Z / 2.0f;
@@ -226,7 +226,7 @@ static void flushSubChunk(Chunk *c, int sy,
 void ChunkRenderer::rebuildChunkNow(int cx, int cz, int sy) {
   if (!m_level) return;
   Chunk *c = m_level->getChunk(cx, cz);
-  if (!c || sy < 0 || sy >= 4) return;
+  if (!c || sy < 0 || sy >= SUBCHUNK_COUNT) return;
 
   // Tessellate the full subchunk in one call
   m_opaqueTess.begin(g_opaqueBuf[sy], MAX_VERTS_PER_SUB_CHUNK);
@@ -274,7 +274,7 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
     float distSq;
     float distSqHoriz;
   };
-  RenderChunk visibleChunks[WORLD_CHUNKS_X * WORLD_CHUNKS_Z * 4];
+  RenderChunk visibleChunks[WORLD_CHUNKS_X * WORLD_CHUNKS_Z * SUBCHUNK_COUNT];
   int visibleCount = 0;
 
   // Process compile queue
@@ -287,7 +287,7 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
       if (!c)
         continue;
 
-      for (int sy = 0; sy < 4; sy++) {
+      for (int sy = 0; sy < SUBCHUNK_COUNT; sy++) {
         if ((c->opaqueTriCount[sy] == 0 && c->transTriCount[sy] == 0 && c->transFancyTriCount[sy] == 0) ||
             (!c->opaqueVertices[sy] && !c->transVertices[sy] && !c->transFancyVertices[sy]))
           continue;
