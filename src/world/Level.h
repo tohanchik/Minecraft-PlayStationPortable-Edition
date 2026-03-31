@@ -3,6 +3,8 @@
 #include "AABB.h"
 #include <math.h>
 #include <vector>
+#include <queue>
+#include <functional>
 
 class Random;
 
@@ -72,15 +74,28 @@ public:
   bool loadFromFile(const char *path);
 
 private:
+  struct WaterTickNode {
+    int dueTick;
+    int idx;
+    bool operator>(const WaterTickNode &o) const {
+      if (dueTick != o.dueTick) return dueTick > o.dueTick;
+      return idx > o.idx;
+    }
+  };
+
   void tickWater();
   bool isWaterBlock(uint8_t id) const;
   int waterIndex(int wx, int wy, int wz) const;
+  void scheduleWaterTick(int wx, int wy, int wz, int delayTicks);
+  void wakeWaterNeighborhood(int wx, int wy, int wz, int delayTicks);
+  void processWaterCell(int wx, int wy, int wz);
 
   Chunk *m_chunks[WORLD_CHUNKS_X][WORLD_CHUNKS_Z];
   std::vector<uint8_t> m_waterDepth;
+  std::priority_queue<WaterTickNode, std::vector<WaterTickNode>, std::greater<WaterTickNode>> m_waterTicks;
+  std::vector<int> m_waterDue;
   long long m_time = 6000LL;
   float m_lastSunBrightness = 1.0f;
-  int m_waterTickAccum = 0;
   int m_simFocusX = -1;
   int m_simFocusY = -1;
   int m_simFocusZ = -1;
