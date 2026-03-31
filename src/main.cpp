@@ -81,6 +81,7 @@ static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
 static CreativeInventory g_creativeInv;
 static const char *g_inventoryHoverName = nullptr;
 static float g_tickAlpha = 0.0f;
+static float g_tpsDisplay = 20.0f;
 static const char *kWorldDir = "ms0:/PSP/GAME/MinecraftPSP/worlds";
 static const char *kInvLayoutCfgPath = "ms0:/PSP/GAME/MinecraftPSP/inv_layout.cfg";
 static const char *kInvTuneCfgPath = "ms0:/PSP/GAME/MinecraftPSP/inv_tune_mode.cfg";
@@ -282,6 +283,18 @@ static uint8_t glyphRow5x7(char ch, int row) {
     case 'W': { static const uint8_t r[7] = {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}; return r[row]; }
     case 'X': { static const uint8_t r[7] = {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}; return r[row]; }
     case 'Y': { static const uint8_t r[7] = {0x11,0x11,0x0A,0x04,0x04,0x04,0x04}; return r[row]; }
+    case '0': { static const uint8_t r[7] = {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}; return r[row]; }
+    case '1': { static const uint8_t r[7] = {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}; return r[row]; }
+    case '2': { static const uint8_t r[7] = {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}; return r[row]; }
+    case '3': { static const uint8_t r[7] = {0x1E,0x01,0x01,0x0E,0x01,0x01,0x1E}; return r[row]; }
+    case '4': { static const uint8_t r[7] = {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}; return r[row]; }
+    case '5': { static const uint8_t r[7] = {0x1F,0x10,0x10,0x1E,0x01,0x01,0x1E}; return r[row]; }
+    case '6': { static const uint8_t r[7] = {0x0E,0x10,0x10,0x1E,0x11,0x11,0x0E}; return r[row]; }
+    case '7': { static const uint8_t r[7] = {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}; return r[row]; }
+    case '8': { static const uint8_t r[7] = {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}; return r[row]; }
+    case '9': { static const uint8_t r[7] = {0x0E,0x11,0x11,0x0F,0x01,0x01,0x0E}; return r[row]; }
+    case ':': { static const uint8_t r[7] = {0x00,0x04,0x04,0x00,0x04,0x04,0x00}; return r[row]; }
+    case '.': { static const uint8_t r[7] = {0x00,0x00,0x00,0x00,0x00,0x06,0x06}; return r[row]; }
     case ' ': return 0;
     default: return 0;
   }
@@ -890,6 +903,12 @@ static void game_update(float dt) {
       s_levelTickAccum -= tickStep;
       ticks++;
     }
+    if (dt > 0.0001f) {
+      float instTps = (float)ticks / dt;
+      g_tpsDisplay = g_tpsDisplay * 0.85f + instTps * 0.15f;
+      if (g_tpsDisplay > 20.0f) g_tpsDisplay = 20.0f;
+      if (g_tpsDisplay < 0.0f) g_tpsDisplay = 0.0f;
+    }
     g_tickAlpha = s_levelTickAccum / tickStep;
     if (g_tickAlpha < 0.0f) g_tickAlpha = 0.0f;
     if (g_tickAlpha > 1.0f) g_tickAlpha = 1.0f;
@@ -1346,6 +1365,12 @@ static void game_render() {
   if (g_statusTimer > 0.0f && g_statusText[0]) {
     hudDrawRect(120.0f, 12.0f, 240.0f, 16.0f, 0xA0000000);
     hudDrawText5x7(128.0f, 16.0f, g_statusText, g_statusColor, 1.1f);
+  }
+  {
+    char tpsText[32];
+    snprintf(tpsText, sizeof(tpsText), "TPS: %.1f", g_tpsDisplay);
+    hudDrawRect(8.0f, 8.0f, 78.0f, 14.0f, 0x90000000);
+    hudDrawText5x7(12.0f, 11.0f, tpsText, 0xFF80FF80, 1.0f);
   }
   sceGuDisable(GU_BLEND);
   sceGuEnable(GU_CULL_FACE);
