@@ -2,6 +2,7 @@
 #include "Chunk.h"
 #include "AABB.h"
 #include <math.h>
+#include <cstddef>
 #include <vector>
 
 class Random;
@@ -75,9 +76,14 @@ private:
   void tickWater();
   bool isWaterBlock(uint8_t id) const;
   int waterIndex(int wx, int wy, int wz) const;
+  void queueWaterCell(int wx, int wy, int wz);
+  void queueWaterNeighborhood(int wx, int wy, int wz);
 
   Chunk *m_chunks[WORLD_CHUNKS_X][WORLD_CHUNKS_Z];
   std::vector<uint8_t> m_waterDepth;
+  std::vector<int> m_waterQueue;
+  std::vector<uint8_t> m_waterQueued;
+  size_t m_waterQueueHead = 0;
   long long m_time = 6000LL;
   float m_lastSunBrightness = 1.0f;
   int m_waterTickAccum = 0;
