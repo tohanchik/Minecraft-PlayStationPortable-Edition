@@ -87,6 +87,28 @@ void Level::tickWater() {
     if (simMaxY >= CHUNK_SIZE_Y) simMaxY = CHUNK_SIZE_Y - 1;
   }
 
+  std::vector<int> scanXOrder;
+  std::vector<int> scanZOrder;
+  const bool hasFocusCenter = (focusX >= 0 && focusZ >= 0);
+  scanXOrder.reserve(simMaxX - simMinX + 1);
+  scanZOrder.reserve(simMaxZ - simMinZ + 1);
+  if (hasFocusCenter) {
+    int startX = focusX;
+    int startZ = focusZ;
+    if (startX < simMinX) startX = simMinX;
+    if (startX > simMaxX) startX = simMaxX;
+    if (startZ < simMinZ) startZ = simMinZ;
+    if (startZ > simMaxZ) startZ = simMaxZ;
+
+    for (int x = startX; x <= simMaxX; ++x) scanXOrder.push_back(x);
+    for (int x = simMinX; x < startX; ++x) scanXOrder.push_back(x);
+    for (int z = startZ; z <= simMaxZ; ++z) scanZOrder.push_back(z);
+    for (int z = simMinZ; z < startZ; ++z) scanZOrder.push_back(z);
+  } else {
+    for (int x = simMinX; x <= simMaxX; ++x) scanXOrder.push_back(x);
+    for (int z = simMinZ; z <= simMaxZ; ++z) scanZOrder.push_back(z);
+  }
+
   auto inBounds = [&](int x, int y, int z) {
     return x >= 0 && x < maxX && z >= 0 && z < maxZ && y >= 0 && y < CHUNK_SIZE_Y;
   };
@@ -135,8 +157,8 @@ void Level::tickWater() {
   };
 
   for (int y = simMaxY; y >= simMinY && !budgetReached; --y) {
-    for (int z = simMinZ; z <= simMaxZ; ++z) {
-      for (int x = simMinX; x <= simMaxX; ++x) {
+    for (int z : scanZOrder) {
+      for (int x : scanXOrder) {
         uint8_t id = getBlock(x, y, z);
         if (!isWaterBlock(id)) continue;
         if (++processedWaterCells > maxWaterCellsPerTick) {
