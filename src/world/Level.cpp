@@ -4,6 +4,7 @@
 #include "TreeFeature.h"
 #include <vector>
 #include <functional>
+#include <unordered_map>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -117,10 +118,25 @@ void Level::tickWater() {
   static const int oppositeDir[4] = {1, 0, 3, 2};
   const int maxFlowSearch = 7;
 
-  std::function<int(int, int, int, int, int)> flowCost =
-      [&](int x, int y, int z, int dist, int fromDir) -> int {
-    if (hasDownwardExit(x, y, z)) return dist;
-    if (dist >= maxFlowSearch) return 999;
+  std::unordered_map<uint64_t, int> flowCostMemo;
+  flowCostMemo.reserve(32768);
+  auto flowCostKey = [&](int x, int y, int z, int fromDir, int remaining) {
+    // Coordinates are bounded by world dimensions; pack all state for memoization.
+    return (uint64_t)(x & 0x1FF) |
+           ((uint64_t)(z & 0x1FF) << 9) |
+           ((uint64_t)(y & 0x7F) << 18) |
+           ((uint64_t)(fromDir + 1) << 25) |
+           ((uint64_t)(remaining & 0x0F) << 28);
+  };
+
+  std::function<int(int, int, int, int, int)> flowCostRemaining =
+      [&](int x, int y, int z, int fromDir, int remaining) -> int {
+    if (hasDownwardExit(x, y, z)) return 0;
+    if (remaining <= 0) return 999;
+
+    uint64_t key = flowCostKey(x, y, z, fromDir, remaining);
+    auto it = flowCostMemo.find(key);
+    if (it != flowCostMemo.end()) return it->second;
 
     int best = 999;
     for (int i = 0; i < 4; ++i) {
@@ -128,9 +144,11 @@ void Level::tickWater() {
       int nx = x + flowDx[i], nz = z + flowDz[i];
       if (!inBounds(nx, y, nz)) continue;
       if (!canFlowInto(nx, y, nz)) continue;
-      int c = flowCost(nx, y, nz, dist + 1, i);
-      if (c < best) best = c;
+      int c = flowCostRemaining(nx, y, nz, i, remaining - 1);
+      if (c < 999 && c + 1 < best) best = c + 1;
     }
+
+    flowCostMemo[key] = best;
     return best;
   };
 
@@ -211,7 +229,7 @@ void Level::tickWater() {
               if (!canFlowInto(nx, y, nz)) continue;
               canSpread[i] = true;
               if (useShortestPathPriority) {
-                costs[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCost(nx, y, nz, 1, i);
+                costs[i] = hasDownwardExit(nx, y, nz) ? 0 : flowCostRemaining(nx, y, nz, i, maxFlowSearch - 1);
               } else {
                 // Still/source blocks spread cheaply; avoid expensive recursive path search.
                 costs[i] = hasDownwardExit(nx, y, nz) ? 0 : 1;
