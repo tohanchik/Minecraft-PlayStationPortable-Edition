@@ -3,64 +3,327 @@
 #include "WorldGen.h"
 #include "Blocks.h"
 #include "NoiseGen.h"
+#include "PerlinNoise.h"
 #include "Random.h"
-#include "TreeFeature.h"
 #include "chunk_defs.h"
 #include <string.h>
 #include <math.h>
+
+struct GenBiomeSurface {
+  uint8_t top;
+  uint8_t filler;
+};
+
+static int pickBiome(float temperature, float downfall) {
+  if (temperature < 0.22f) return WorldGen::BIOME_TUNDRA;
+  if (temperature < 0.40f) return WorldGen::BIOME_TAIGA;
+  if (temperature > 0.78f && downfall < 0.22f) return WorldGen::BIOME_DESERT;
+  if (downfall > 0.55f) return WorldGen::BIOME_FOREST;
+  return WorldGen::BIOME_PLAINS;
+}
+
+static GenBiomeSurface getBiomeSurface(int biome) {
+  GenBiomeSurface out = {BLOCK_GRASS, BLOCK_DIRT};
+  if (biome == WorldGen::BIOME_DESERT) {
+    out.top = BLOCK_SAND;
+    out.filler = BLOCK_SAND;
+  } else if (biome == WorldGen::BIOME_TUNDRA) {
+    out.top = BLOCK_SNOW;
+    out.filler = BLOCK_DIRT;
+  }
+  return out;
+}
+
+static void getClimateAt(int wx, int wz, int64_t seed, float &temperature,
+                         float &downfall, int &biome) {
+  const float zoom = 2.0f;
+  const float tempScale = zoom / 80.0f;
+  const float downfallScale = zoom / 40.0f;
+  const float noiseScale = 1.0f / 4.0f;
+
+  float t = NoiseGen::octaveNoise(wx * tempScale, wz * tempScale,
+                                  seed * 9871LL + 0x111F23LL, 4, 0.5f);
+  float d = NoiseGen::octaveNoise(wx * downfallScale, wz * downfallScale,
+                                  seed * 39811LL + 0x29A3C1LL, 4, 0.5f);
+  float n = NoiseGen::octaveNoise(wx * noiseScale, wz * noiseScale,
+                                  seed * 543321LL + 0x58D2B5LL, 2, 0.5f);
+
+  float noise = (n * 1.1f + 0.5f);
+  float tMix = (t * 0.15f + 0.7f) * 0.99f + noise * 0.01f;
+  float dMix = (d * 0.15f + 0.5f) * 0.998f + noise * 0.002f;
+
+  tMix = 1.0f - ((1.0f - tMix) * (1.0f - tMix));
+  if (tMix < 0.0f) tMix = 0.0f;
+  if (dMix < 0.0f) dMix = 0.0f;
+  if (tMix > 1.0f) tMix = 1.0f;
+  if (dMix > 1.0f) dMix = 1.0f;
+
+  temperature = tMix;
+  downfall = dMix;
+  biome = pickBiome(temperature, downfall);
+}
+
+static void fillHeightsFromMcpeModel(float *buffer, int x, int y, int z,
+                                     int xSize, int ySize, int zSize,
+                                     int64_t worldSeed,
+                                     float tempMap[CHUNK_SIZE_X][CHUNK_SIZE_Z],
+                                     float downfallMap[CHUNK_SIZE_X][CHUNK_SIZE_Z]) {
+  Random random(worldSeed);
+  PerlinNoise lperlinNoise1(&random, 16);
+  PerlinNoise lperlinNoise2(&random, 16);
+  PerlinNoise perlinNoise1(&random, 8);
+  PerlinNoise scaleNoise(&random, 10);
+  PerlinNoise depthNoise(&random, 16);
+
+  float s = 684.412f;
+  float hs = 684.412f;
+
+  const int size2d = xSize * zSize;
+  const int size3d = xSize * ySize * zSize;
+  float sr[size2d];
+  float dr[size2d];
+  float pnr[size3d];
+  float ar[size3d];
+  float br[size3d];
+
+  scaleNoise.getRegion(sr, (float)x, 0.0f, (float)z, xSize, 1, zSize, 1.121f,
+                       1.0f, 1.121f);
+  depthNoise.getRegion(dr, (float)x, 0.0f, (float)z, xSize, 1, zSize, 200.0f,
+                       1.0f, 200.0f);
+  perlinNoise1.getRegion(pnr, (float)x, (float)y, (float)z, xSize, ySize, zSize,
+                         s / 80.0f, hs / 160.0f, s / 80.0f);
+  lperlinNoise1.getRegion(ar, (float)x, (float)y, (float)z, xSize, ySize, zSize,
+                          s, hs, s);
+  lperlinNoise2.getRegion(br, (float)x, (float)y, (float)z, xSize, ySize, zSize,
+                          s, hs, s);
+
+  int p = 0;
+  int pp = 0;
+  int wScale = 16 / xSize;
+
+  for (int xx = 0; xx < xSize; xx++) {
+    int xp = xx * wScale + wScale / 2;
+    if (xp < 0) xp = 0;
+    if (xp > CHUNK_SIZE_X - 1) xp = CHUNK_SIZE_X - 1;
+
+    for (int zz = 0; zz < zSize; zz++) {
+      int zp = zz * wScale + wScale / 2;
+      if (zp < 0) zp = 0;
+      if (zp > CHUNK_SIZE_Z - 1) zp = CHUNK_SIZE_Z - 1;
+
+      float temperature = tempMap[xp][zp];
+      float downfall = downfallMap[xp][zp] * temperature;
+      float dd = 1.0f - downfall;
+      dd = dd * dd;
+      dd = dd * dd;
+      dd = 1.0f - dd;
+
+      float scale = ((sr[pp] + 256.0f) / 512.0f);
+      scale *= dd;
+      if (scale > 1.0f) scale = 1.0f;
+
+      float depth = (dr[pp] / 8000.0f);
+      if (depth < 0) depth = -depth * 0.3f;
+      depth = depth * 3.0f - 2.0f;
+
+      if (depth < 0) {
+        depth = depth / 2.0f;
+        if (depth < -1.0f) depth = -1.0f;
+        depth = depth / 1.4f;
+        depth /= 2.0f;
+        scale = 0.0f;
+      } else {
+        if (depth > 1.0f) depth = 1.0f;
+        depth = depth / 8.0f;
+      }
+
+      if (scale < 0.0f) scale = 0.0f;
+      scale = scale + 0.5f;
+      depth = depth * ySize / 16.0f;
+      float yCenter = ySize / 2.0f + depth * 4.0f;
+      pp++;
+
+      for (int yy = 0; yy < ySize; yy++) {
+        float yOffs = (yy - yCenter) * 12.0f / scale;
+        if (yOffs < 0.0f) yOffs *= 4.0f;
+
+        float bb = ar[p] / 512.0f;
+        float cc = br[p] / 512.0f;
+        float v = (pnr[p] / 10.0f + 1.0f) / 2.0f;
+        float val = (v < 0.0f) ? bb : (v > 1.0f ? cc : bb + (cc - bb) * v);
+        val -= yOffs;
+
+        if (yy > ySize - 4) {
+          float slide = (yy - (ySize - 4)) / 3.0f;
+          val = val * (1.0f - slide) + -10.0f * slide;
+        }
+        buffer[p++] = val;
+      }
+    }
+  }
+}
 
 static inline bool inChunk(int lx, int ly, int lz) {
   return lx >= 0 && lx < CHUNK_SIZE_X && lz >= 0 && lz < CHUNK_SIZE_Z &&
          ly > 0 && ly < CHUNK_SIZE_Y;
 }
 
-static inline bool isAirOrWater(uint8_t id) {
-  return id == BLOCK_AIR || id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
+static inline int blockIndex(int lx, int ly, int lz) {
+  return (lx * CHUNK_SIZE_Z + lz) * CHUNK_SIZE_Y + ly;
 }
 
-static int topSolidY(
-    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
-    int lx, int lz) {
-  for (int y = CHUNK_SIZE_Y - 1; y >= 0; --y) {
-    if (!isAirOrWater(out[lx][lz][y])) return y;
+static void addTunnelMcpeCave(uint8_t *flat, int xOffs, int zOffs, Random &rnd,
+                              int64_t worldSeed, float xCave, float yCave,
+                              float zCave, float thickness, float yRot,
+                              float xRot, int step, int dist, float yScale) {
+  const float PI = 3.14159265f;
+  float xMid = (float)(xOffs * 16 + 8);
+  float zMid = (float)(zOffs * 16 + 8);
+
+  float yRota = 0.0f;
+  float xRota = 0.0f;
+  Random local(rnd.nextLong());
+
+  const int radius = 8;
+  if (dist <= 0) {
+    int max = radius * 16 - 16;
+    dist = max - local.nextInt(max / 4);
   }
-  return 0;
-}
-
-static uint8_t shoreFillFromTop(uint8_t topId) {
-  if (topId == BLOCK_SAND || topId == BLOCK_GRAVEL || topId == BLOCK_STONE) return topId;
-  if (topId == BLOCK_GRASS) return BLOCK_DIRT;
-  if (topId == BLOCK_DIRT) return BLOCK_DIRT;
-  return BLOCK_DIRT;
-}
-
-static inline bool isTopSurfaceBlock(uint8_t id) {
-  return id == BLOCK_GRASS || id == BLOCK_SAND || id == BLOCK_GRAVEL;
-}
-
-static uint8_t majorityTopBlock(
-    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
-    int lx, int lz, int y) {
-  int grass = 0;
-  int sand = 0;
-  int gravel = 0;
-
-  const int nx[4] = {-1, 1, 0, 0};
-  const int nz[4] = {0, 0, -1, 1};
-  for (int i = 0; i < 4; ++i) {
-    int xx = lx + nx[i];
-    int zz = lz + nz[i];
-    if (xx < 0 || xx >= CHUNK_SIZE_X || zz < 0 || zz >= CHUNK_SIZE_Z) continue;
-    uint8_t n = out[xx][zz][y];
-    if (n == BLOCK_GRASS) ++grass;
-    else if (n == BLOCK_SAND) ++sand;
-    else if (n == BLOCK_GRAVEL) ++gravel;
+  bool singleStep = false;
+  if (step == -1) {
+    step = dist / 2;
+    singleStep = true;
   }
 
-  if (grass >= 3) return BLOCK_GRASS;
-  if (sand >= 3) return BLOCK_SAND;
-  if (gravel >= 3) return BLOCK_GRAVEL;
-  return 0;
+  int splitPoint = local.nextInt(dist / 2) + dist / 4;
+  bool steep = local.nextInt(6) == 0;
+
+  for (; step < dist; step++) {
+    float rad = 1.5f + (sinf(step * PI / dist) * thickness);
+    float yRad = rad * yScale;
+
+    float xc = cosf(xRot);
+    float xs = sinf(xRot);
+    xCave += cosf(yRot) * xc;
+    yCave += xs;
+    zCave += sinf(yRot) * xc;
+
+    xRot *= steep ? 0.92f : 0.7f;
+    xRot += xRota * 0.1f;
+    yRot += yRota * 0.1f;
+    xRota *= 0.90f;
+    yRota *= 0.75f;
+    xRota += (local.nextFloat() - local.nextFloat()) * local.nextFloat() * 2.0f;
+    yRota += (local.nextFloat() - local.nextFloat()) * local.nextFloat() * 4.0f;
+
+    if (!singleStep && step == splitPoint && thickness > 1.0f) {
+      addTunnelMcpeCave(flat, xOffs, zOffs, rnd, worldSeed, xCave, yCave, zCave,
+                        local.nextFloat() * 0.5f + 0.5f, yRot - PI / 2.0f,
+                        xRot / 3.0f, step, dist, 1.0f);
+      addTunnelMcpeCave(flat, xOffs, zOffs, rnd, worldSeed, xCave, yCave, zCave,
+                        local.nextFloat() * 0.5f + 0.5f, yRot + PI / 2.0f,
+                        xRot / 3.0f, step, dist, 1.0f);
+      return;
+    }
+    if (!singleStep && local.nextInt(4) == 0) continue;
+
+    float xd = xCave - xMid;
+    float zd = zCave - zMid;
+    float remaining = (float)(dist - step);
+    float rr = (thickness + 2.0f) + 16.0f;
+    if (xd * xd + zd * zd - (remaining * remaining) > rr * rr) return;
+
+    if (xCave < xMid - 16 - rad * 2 || zCave < zMid - 16 - rad * 2 ||
+        xCave > xMid + 16 + rad * 2 || zCave > zMid + 16 + rad * 2)
+      continue;
+
+    int x0 = (int)floorf(xCave - rad) - xOffs * 16 - 1;
+    int x1 = (int)floorf(xCave + rad) - xOffs * 16 + 1;
+    int y0 = (int)floorf(yCave - yRad) - 1;
+    int y1 = (int)floorf(yCave + yRad) + 1;
+    int z0 = (int)floorf(zCave - rad) - zOffs * 16 - 1;
+    int z1 = (int)floorf(zCave + rad) - zOffs * 16 + 1;
+    if (x0 < 0) x0 = 0;
+    if (x1 > 16) x1 = 16;
+    if (y0 < 1) y0 = 1;
+    if (y1 > 120) y1 = 120;
+    if (z0 < 0) z0 = 0;
+    if (z1 > 16) z1 = 16;
+
+    bool detectedWater = false;
+    for (int xx = x0; !detectedWater && xx < x1; xx++) {
+      for (int zz = z0; !detectedWater && zz < z1; zz++) {
+        for (int yy = y1 + 1; !detectedWater && yy >= y0 - 1; yy--) {
+          if (yy < 0 || yy >= CHUNK_SIZE_Y) continue;
+          uint8_t b = flat[blockIndex(xx, yy, zz)];
+          if (b == BLOCK_WATER_FLOW || b == BLOCK_WATER_STILL) detectedWater = true;
+          if (yy != y0 - 1 && xx != x0 && xx != x1 - 1 && zz != z0 && zz != z1 - 1)
+            yy = y0;
+        }
+      }
+    }
+    if (detectedWater) continue;
+
+    for (int xx = x0; xx < x1; xx++) {
+      float xdn = ((xx + xOffs * 16 + 0.5f) - xCave) / rad;
+      for (int zz = z0; zz < z1; zz++) {
+        float zdn = ((zz + zOffs * 16 + 0.5f) - zCave) / rad;
+        bool hasGrass = false;
+        if (xdn * xdn + zdn * zdn >= 1.0f) continue;
+        for (int yy = y1 - 1; yy >= y0; yy--) {
+          float ydn = (yy + 0.5f - yCave) / yRad;
+          if (ydn <= -0.7f || xdn * xdn + ydn * ydn + zdn * zdn >= 1.0f) continue;
+          int idx = blockIndex(xx, yy, zz);
+          uint8_t block = flat[idx];
+          if (block == BLOCK_GRASS) hasGrass = true;
+          if (block == BLOCK_STONE || block == BLOCK_DIRT || block == BLOCK_GRASS) {
+            if (yy < 10) flat[idx] = BLOCK_LAVA_STILL;
+            else {
+              flat[idx] = BLOCK_AIR;
+              if (hasGrass && yy > 0 && flat[blockIndex(xx, yy - 1, zz)] == BLOCK_DIRT)
+                flat[blockIndex(xx, yy - 1, zz)] = BLOCK_GRASS;
+            }
+          }
+        }
+      }
+    }
+    if (singleStep) break;
+  }
+}
+
+static void applyLargeCaveFeature(uint8_t *flat, int cx, int cz, int64_t worldSeed) {
+  Random random(worldSeed);
+  int64_t xScale = random.nextLong() / 2LL * 2LL + 1LL;
+  int64_t zScale = random.nextLong() / 2LL * 2LL + 1LL;
+  const int radius = 8;
+
+  for (int x = cx - radius; x <= cx + radius; ++x) {
+    for (int z = cz - radius; z <= cz + radius; ++z) {
+      random.setSeed(((int64_t)x * xScale + (int64_t)z * zScale) ^ worldSeed);
+      int caves = random.nextInt(random.nextInt(random.nextInt(40) + 1) + 1);
+      if (random.nextInt(15) != 0) caves = 0;
+
+      for (int cave = 0; cave < caves; cave++) {
+        float xCave = (float)(x * 16 + random.nextInt(16));
+        float yCave = (float)(random.nextInt(random.nextInt(120) + 8));
+        float zCave = (float)(z * 16 + random.nextInt(16));
+        int tunnels = 1;
+        if (random.nextInt(4) == 0) {
+          addTunnelMcpeCave(flat, cx, cz, random, worldSeed, xCave, yCave, zCave,
+                            1.0f + random.nextFloat() * 6.0f, 0.0f, 0.0f, -1,
+                            -1, 0.5f);
+          tunnels += random.nextInt(4);
+        }
+        for (int i = 0; i < tunnels; i++) {
+          float yRot = random.nextFloat() * 3.14159265f * 2.0f;
+          float xRot = ((random.nextFloat() - 0.5f) * 2.0f) / 8.0f;
+          float thick = random.nextFloat() * 2.0f + random.nextFloat();
+          addTunnelMcpeCave(flat, cx, cz, random, worldSeed, xCave, yCave, zCave,
+                            thick, yRot, xRot, 0, 0, 1.0f);
+        }
+      }
+    }
+  }
 }
 
 static void placeOreVein(
@@ -114,108 +377,43 @@ static void placeOreVein(
   }
 }
 
-static uint8_t pickShoreMaterial(
-    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
-    int lx, int lz, int y) {
-  const uint8_t preferred[] = {
-      BLOCK_SAND, BLOCK_GRAVEL, BLOCK_DIRT, BLOCK_GRASS, BLOCK_STONE};
-
-  for (int i = 0; i < 5; ++i) {
-    uint8_t want = preferred[i];
-    if (lx > 0 && out[lx - 1][lz][y] == want) return want;
-    if (lx + 1 < CHUNK_SIZE_X && out[lx + 1][lz][y] == want) return want;
-    if (lz > 0 && out[lx][lz - 1][y] == want) return want;
-    if (lz + 1 < CHUNK_SIZE_Z && out[lx][lz + 1][y] == want) return want;
-  }
-
-  uint8_t below = out[lx][lz][y - 1];
-  if (below != BLOCK_AIR && below != BLOCK_WATER_STILL) return below;
-  return BLOCK_STONE;
-}
-
-static int countSolidHorizontalNeighbors(
-    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
-    int lx, int lz, int y) {
-  int solid = 0;
-  if (lx > 0) {
-    uint8_t b = out[lx - 1][lz][y];
-    if (b != BLOCK_AIR && b != BLOCK_WATER_STILL) solid++;
-  }
-  if (lx + 1 < CHUNK_SIZE_X) {
-    uint8_t b = out[lx + 1][lz][y];
-    if (b != BLOCK_AIR && b != BLOCK_WATER_STILL) solid++;
-  }
-  if (lz > 0) {
-    uint8_t b = out[lx][lz - 1][y];
-    if (b != BLOCK_AIR && b != BLOCK_WATER_STILL) solid++;
-  }
-  if (lz + 1 < CHUNK_SIZE_Z) {
-    uint8_t b = out[lx][lz + 1][y];
-    if (b != BLOCK_AIR && b != BLOCK_WATER_STILL) solid++;
-  }
-  return solid;
-}
-
-static void stabilizeSeaWaterAndShore(
-    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
-    int seaLevel) {
-  // MC classic/PE-style fixup: generation can leave shoreline "hanging water"
-  // pockets until liquid ticks run. Resolve at gen-time:
-  // 1) flood underwater air close to water.
-  // 2) optionally seal only *tiny* pits with matching shore material
-  //    (to avoid creating large artificial terraces).
-  //
-  // This keeps lakes/oceans visually stable right after chunk creation.
-  if (seaLevel < 1) return;
-  int maxY = seaLevel;
-  if (maxY > CHUNK_SIZE_Y - 1) maxY = CHUNK_SIZE_Y - 1;
-
-  for (int pass = 0; pass < 8; ++pass) {
-    bool changed = false;
-    for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
-      for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
-        for (int y = maxY; y >= 1; --y) {
-          if (out[lx][lz][y] != BLOCK_AIR) continue;
-
-          bool nearWater = false;
-          if (y < maxY && out[lx][lz][y + 1] == BLOCK_WATER_STILL) nearWater = true;
-          if (!nearWater && out[lx][lz][y - 1] == BLOCK_WATER_STILL) nearWater = true;
-          if (!nearWater && lx > 0 && out[lx - 1][lz][y] == BLOCK_WATER_STILL) nearWater = true;
-          if (!nearWater && lx + 1 < CHUNK_SIZE_X && out[lx + 1][lz][y] == BLOCK_WATER_STILL) nearWater = true;
-          if (!nearWater && lz > 0 && out[lx][lz - 1][y] == BLOCK_WATER_STILL) nearWater = true;
-          if (!nearWater && lz + 1 < CHUNK_SIZE_Z && out[lx][lz + 1][y] == BLOCK_WATER_STILL) nearWater = true;
-
-          if (nearWater) {
-            bool solidBelow = out[lx][lz][y - 1] != BLOCK_AIR &&
-                              out[lx][lz][y - 1] != BLOCK_WATER_STILL;
-            int solidSides = countSolidHorizontalNeighbors(out, lx, lz, y);
-
-            // Only seal very small enclosed shoreline potholes.
-            // Open/elongated spaces should become water.
-            if (solidBelow && solidSides >= 3) {
-              out[lx][lz][y] = pickShoreMaterial(out, lx, lz, y);
-            } else {
-              out[lx][lz][y] = BLOCK_WATER_STILL;
-            }
-            changed = true;
-          }
-        }
-      }
-    }
-    if (!changed) break;
-  }
-}
-
 // Get terrain height
 int WorldGen::getTerrainHeight(int wx, int wz, int64_t seed) {
-  // MCPE-like layered terrain blend: broad continents + detail hills.
-  float base = NoiseGen::octaveNoise(wx / 192.0f, wz / 192.0f, seed ^ 0x51A9B17D) * 2.0f - 1.0f;
-  float hills = NoiseGen::octaveNoise(wx / 72.0f, wz / 72.0f, seed ^ 0x7F4A7C15) * 2.0f - 1.0f;
-  float detail = NoiseGen::octaveNoise(wx / 28.0f, wz / 28.0f, seed ^ 0x1D872B41) * 2.0f - 1.0f;
-  int h = 64 + (int)(base * 18.0f + hills * 14.0f + detail * 6.0f);
-  if (h < 4) h = 4;
-  if (h > CHUNK_SIZE_Y - 2) h = CHUNK_SIZE_Y - 2;
-  return h;
+  float tempMap[CHUNK_SIZE_X][CHUNK_SIZE_Z];
+  float downfallMap[CHUNK_SIZE_X][CHUNK_SIZE_Z];
+  for (int x = 0; x < CHUNK_SIZE_X; ++x) {
+    for (int z = 0; z < CHUNK_SIZE_Z; ++z) {
+      int biome = BIOME_PLAINS;
+      getClimateAt(wx, wz, seed, tempMap[x][z], downfallMap[x][z], biome);
+    }
+  }
+
+  const int ySize = CHUNK_SIZE_Y / 8 + 1;
+  float col[1][1][ySize];
+  fillHeightsFromMcpeModel(&col[0][0][0], wx / 4, 0, wz / 4, 1, ySize, 1, seed,
+                           tempMap, downfallMap);
+
+  int top = 1;
+  for (int gy = 0; gy < ySize - 1; ++gy) {
+    float d0 = col[0][0][gy];
+    float d1 = col[0][0][gy + 1];
+    for (int iy = 0; iy < 8; ++iy) {
+      int y = gy * 8 + iy;
+      if (y >= CHUNK_SIZE_Y) break;
+      float t = (float)iy / 8.0f;
+      float d = d0 + (d1 - d0) * t;
+      if (d > 0.0f) top = y;
+    }
+  }
+  return top;
+}
+
+int WorldGen::getBiomeId(int wx, int wz, int64_t seed) {
+  float t = 0.5f;
+  float d = 0.5f;
+  int biome = BIOME_PLAINS;
+  getClimateAt(wx, wz, seed, t, d, biome);
+  return biome;
 }
 
 // Generate chunk
@@ -227,41 +425,103 @@ void WorldGen::generateChunk(
 
   Random rng(worldSeed ^ ((int64_t)cx * 341873128712LL) ^
              ((int64_t)cz * 132897987541LL));
+  const int seaLevel = 62;
 
-  // === Base Terrain ===
-  for (int lx = 0; lx < CHUNK_SIZE_X; lx++) {
-    for (int lz = 0; lz < CHUNK_SIZE_Z; lz++) {
+  float temperatureMap[CHUNK_SIZE_X][CHUNK_SIZE_Z];
+  float downfallMap[CHUNK_SIZE_X][CHUNK_SIZE_Z];
+  int biomeMap[CHUNK_SIZE_X][CHUNK_SIZE_Z];
+
+  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
       int wx = cx * CHUNK_SIZE_X + lx;
       int wz = cz * CHUNK_SIZE_Z + lz;
+      float temperature = 0.5f;
+      float downfall = 0.5f;
+      int biome = BIOME_PLAINS;
+      getClimateAt(wx, wz, worldSeed, temperature, downfall, biome);
+      temperatureMap[lx][lz] = temperature;
+      downfallMap[lx][lz] = downfall;
+      biomeMap[lx][lz] = biome;
+    }
+  }
 
-      int surfaceY = getTerrainHeight(wx, wz, worldSeed);
-      if (surfaceY >= CHUNK_SIZE_Y)
-        surfaceY = CHUNK_SIZE_Y - 1;
+  // === Base Terrain ===
+  // Generate density on a coarse 4x4x8 grid and trilinearly interpolate,
+  // similar in spirit to MCPE prepareHeights/getHeights, but with our
+  // existing noise backend.
+  const int cellX = 4;
+  const int cellY = 8;
+  const int cellZ = 4;
+  const int sx = CHUNK_SIZE_X / cellX + 1;
+  const int sy = CHUNK_SIZE_Y / cellY + 1;
+  const int sz = CHUNK_SIZE_Z / cellZ + 1;
+  float density[sx][sz][sy];
 
-      // Base density fill for surface-pass: solid stone + bedrock only.
-      for (int y = 0; y <= surfaceY; y++) {
-        out[lx][lz][y] = (y == 0) ? BLOCK_BEDROCK : BLOCK_STONE;
-      }
+  fillHeightsFromMcpeModel(&density[0][0][0], cx * (CHUNK_SIZE_X / cellX), 0,
+                           cz * (CHUNK_SIZE_Z / cellZ), sx, sy, sz, worldSeed,
+                           temperatureMap, downfallMap);
 
-      // Water at sea level (MCPE-style ~62).
-      const int seaLevel = 62;
-      if (surfaceY < seaLevel) {
-        for (int y = surfaceY + 1; y <= seaLevel; y++) {
-          if (y < CHUNK_SIZE_Y)
-            out[lx][lz][y] = BLOCK_WATER_STILL;
+  for (int gx = 0; gx < sx - 1; ++gx) {
+    for (int gz = 0; gz < sz - 1; ++gz) {
+      for (int gy = 0; gy < sy - 1; ++gy) {
+        float d000 = density[gx][gz][gy];
+        float d100 = density[gx + 1][gz][gy];
+        float d010 = density[gx][gz + 1][gy];
+        float d110 = density[gx + 1][gz + 1][gy];
+        float d001 = density[gx][gz][gy + 1];
+        float d101 = density[gx + 1][gz][gy + 1];
+        float d011 = density[gx][gz + 1][gy + 1];
+        float d111 = density[gx + 1][gz + 1][gy + 1];
+
+        for (int lx0 = 0; lx0 < cellX; ++lx0) {
+          float fx = (float)lx0 / (float)cellX;
+          for (int lz0 = 0; lz0 < cellZ; ++lz0) {
+            float fz = (float)lz0 / (float)cellZ;
+            int lx = gx * cellX + lx0;
+            int lz = gz * cellZ + lz0;
+            float temperature = temperatureMap[lx][lz];
+
+            for (int ly0 = 0; ly0 < cellY; ++ly0) {
+              float fy = (float)ly0 / (float)cellY;
+              int y = gy * cellY + ly0;
+              if (y >= CHUNK_SIZE_Y) continue;
+
+              float d00 = d000 + (d100 - d000) * fx;
+              float d10 = d010 + (d110 - d010) * fx;
+              float d01 = d001 + (d101 - d001) * fx;
+              float d11 = d011 + (d111 - d011) * fx;
+              float d0 = d00 + (d10 - d00) * fz;
+              float d1 = d01 + (d11 - d01) * fz;
+              float d = d0 + (d1 - d0) * fy;
+
+              if (y == 0) {
+                out[lx][lz][y] = BLOCK_BEDROCK;
+              } else if (d > 0.0f) {
+                out[lx][lz][y] = BLOCK_STONE;
+              } else if (y <= 62) {
+                if (y == 62 && temperature < 0.5f) out[lx][lz][y] = BLOCK_ICE;
+                else out[lx][lz][y] = BLOCK_WATER_STILL;
+              }
+            }
+          }
         }
       }
     }
   }
 
+  // === Cave carve pass (LargeCaveFeature-style, MCPE 0.6.1 order) ===
+  applyLargeCaveFeature(&out[0][0][0], cx, cz, worldSeed);
+
   // === Surface shaping pass (MCPE RandomLevelSource::buildSurfaces-like) ===
   // Converts top stone layers into biome-like top/filler (grass/dirt/sand/gravel)
   // and adds a small sandstone run beneath sand.
-  const int seaLevel = 62;
   for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
     for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
       int wx = cx * CHUNK_SIZE_X + lx;
       int wz = cz * CHUNK_SIZE_Z + lz;
+      float temperature = temperatureMap[lx][lz];
+      int biome = biomeMap[lx][lz];
+      GenBiomeSurface surface = getBiomeSurface(biome);
 
       float sandN = NoiseGen::octaveNoise(wx / 32.0f, wz / 32.0f, worldSeed ^ 0x5A17D3LL, 4, 0.5f) * 2.0f - 1.0f;
       float gravelN = NoiseGen::octaveNoise(wx / 32.0f, wz / 32.0f, worldSeed ^ 0x193A49LL, 4, 0.5f) * 2.0f - 1.0f;
@@ -272,8 +532,8 @@ void WorldGen::generateChunk(
       int runDepth = (int)(depthN / 3.0f + 3.0f + rng.nextFloat() * 0.25f);
 
       int run = -1;
-      uint8_t top = BLOCK_GRASS;
-      uint8_t filler = BLOCK_DIRT;
+      uint8_t top = surface.top;
+      uint8_t filler = surface.filler;
 
       for (int y = CHUNK_SIZE_Y - 1; y >= 0; --y) {
         if (y <= rng.nextInt(5)) {
@@ -293,8 +553,8 @@ void WorldGen::generateChunk(
             top = BLOCK_AIR;
             filler = BLOCK_STONE;
           } else if (y >= seaLevel - 4 && y <= seaLevel + 1) {
-            top = BLOCK_GRASS;
-            filler = BLOCK_DIRT;
+            top = surface.top;
+            filler = surface.filler;
             if (useGravel) {
               top = BLOCK_AIR;
               filler = BLOCK_GRAVEL;
@@ -305,7 +565,10 @@ void WorldGen::generateChunk(
             }
           }
 
-          if (y < seaLevel && top == BLOCK_AIR) top = BLOCK_WATER_STILL;
+          if (y < seaLevel && top == BLOCK_AIR) {
+            if (temperature < 0.15f) top = BLOCK_ICE;
+            else top = BLOCK_WATER_STILL;
+          }
 
           run = runDepth;
           out[lx][lz][y] = (y >= seaLevel - 1) ? top : filler;
@@ -322,151 +585,8 @@ void WorldGen::generateChunk(
     }
   }
 
-  // Remove tiny 1-block "salt-and-pepper" surface noise (grass/sand/gravel).
-  // This keeps beaches cleaner and avoids random mixed patches inland.
-  uint8_t topFix[CHUNK_SIZE_X][CHUNK_SIZE_Z];
-  memset(topFix, 0, sizeof(topFix));
-  for (int lx = 1; lx < CHUNK_SIZE_X - 1; ++lx) {
-    for (int lz = 1; lz < CHUNK_SIZE_Z - 1; ++lz) {
-      int y = topSolidY(out, lx, lz);
-      if (y <= 0 || y >= CHUNK_SIZE_Y - 1) continue;
-      uint8_t cur = out[lx][lz][y];
-      if (!isTopSurfaceBlock(cur)) continue;
-      uint8_t maj = majorityTopBlock(out, lx, lz, y);
-      if (maj != 0 && maj != cur) topFix[lx][lz] = maj;
-    }
-  }
-  for (int lx = 1; lx < CHUNK_SIZE_X - 1; ++lx) {
-    for (int lz = 1; lz < CHUNK_SIZE_Z - 1; ++lz) {
-      uint8_t fix = topFix[lx][lz];
-      if (fix == 0) continue;
-      int y = topSolidY(out, lx, lz);
-      out[lx][lz][y] = fix;
-      if (y > 0 && out[lx][lz][y - 1] != BLOCK_BEDROCK) {
-        out[lx][lz][y - 1] = (fix == BLOCK_GRASS) ? BLOCK_DIRT : fix;
-      }
-    }
-  }
-
-  // === Shoreline smoothing near sea level ===
-  // Build a small "natural rim" around water and avoid immediate drops right
-  // behind the coast (which looks like a dam/wall).
-  int distToWater[CHUNK_SIZE_X][CHUNK_SIZE_Z];
-  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx)
-    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz)
-      distToWater[lx][lz] = 99;
-
-  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
-    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
-      if (out[lx][lz][seaLevel] == BLOCK_WATER_STILL) distToWater[lx][lz] = 0;
-    }
-  }
-  for (int pass = 0; pass < 2; ++pass) {
-    for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
-      for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
-        int d = distToWater[lx][lz];
-        if (d >= 2) continue;
-        if (lx > 0 && distToWater[lx - 1][lz] > d + 1) distToWater[lx - 1][lz] = d + 1;
-        if (lx + 1 < CHUNK_SIZE_X && distToWater[lx + 1][lz] > d + 1) distToWater[lx + 1][lz] = d + 1;
-        if (lz > 0 && distToWater[lx][lz - 1] > d + 1) distToWater[lx][lz - 1] = d + 1;
-        if (lz + 1 < CHUNK_SIZE_Z && distToWater[lx][lz + 1] > d + 1) distToWater[lx][lz + 1] = d + 1;
-      }
-    }
-  }
-
-  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
-    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
-      int d = distToWater[lx][lz];
-      if (d <= 0 || d > 2) continue;
-      if (out[lx][lz][seaLevel] == BLOCK_WATER_STILL) continue;
-
-      int topY = topSolidY(out, lx, lz);
-      if (topY <= 0) continue;
-      uint8_t fillId = shoreFillFromTop(out[lx][lz][topY]);
-
-      int target = (d == 1) ? seaLevel : (seaLevel - 1);
-      if (topY >= target) continue;
-
-      for (int y = topY + 1; y <= target && y < CHUNK_SIZE_Y; ++y) {
-        if (isAirOrWater(out[lx][lz][y])) out[lx][lz][y] = fillId;
-      }
-    }
-  }
-
-  // === Vegetation ===
   int xo = cx * CHUNK_SIZE_X;
   int zo = cz * CHUNK_SIZE_Z;
-
-  // 1-2 grass clusters per chunk
-  int grassClusters = 1 + rng.nextInt(2);
-  for (int i = 0; i < grassClusters; i++) {
-    int x = xo + rng.nextInt(16);
-    int z = zo + rng.nextInt(16);
-    int y = rng.nextInt(CHUNK_SIZE_Y);
-    
-    // TallGrassFeature spreads 128 times around the center
-    for (int j = 0; j < 128; j++) {
-      int x2 = x + rng.nextInt(8) - rng.nextInt(8);
-      int y2 = y + rng.nextInt(4) - rng.nextInt(4);
-      int z2 = z + rng.nextInt(8) - rng.nextInt(8);
-      
-      int lx = x2 - xo;
-      int ly = y2;
-      int lz = z2 - zo;
-      
-      if (lx >= 0 && lx < CHUNK_SIZE_X && lz >= 0 && lz < CHUNK_SIZE_Z && ly > 0 && ly < CHUNK_SIZE_Y) {
-        if (out[lx][lz][ly] == BLOCK_AIR && out[lx][lz][ly - 1] == BLOCK_GRASS) {
-          out[lx][lz][ly] = BLOCK_TALLGRASS;
-        }
-      }
-    }
-  }
-
-  // Flowers (2 clusters)
-  for (int i = 0; i < 2; i++) {
-    int x = xo + rng.nextInt(16);
-    int z = zo + rng.nextInt(16);
-    int y = rng.nextInt(CHUNK_SIZE_Y);
-    
-    // FlowerFeature spreads 64 times
-    for (int j = 0; j < 64; j++) {
-      int x2 = x + rng.nextInt(8) - rng.nextInt(8);
-      int y2 = y + rng.nextInt(4) - rng.nextInt(4);
-      int z2 = z + rng.nextInt(8) - rng.nextInt(8);
-      
-      int lx = x2 - xo;
-      int ly = y2;
-      int lz = z2 - zo;
-      
-      if (lx >= 0 && lx < CHUNK_SIZE_X && lz >= 0 && lz < CHUNK_SIZE_Z && ly > 0 && ly < CHUNK_SIZE_Y) {
-        if (out[lx][lz][ly] == BLOCK_AIR && out[lx][lz][ly - 1] == BLOCK_GRASS) {
-          out[lx][lz][ly] = BLOCK_FLOWER;
-        }
-      }
-    }
-    
-    // Rose (25% chance of second flower patch being red)
-    if (rng.nextInt(4) == 0) {
-      x = xo + rng.nextInt(16);
-      z = zo + rng.nextInt(16);
-      y = rng.nextInt(CHUNK_SIZE_Y);
-      for (int j = 0; j < 64; j++) {
-        int x2 = x + rng.nextInt(8) - rng.nextInt(8);
-        int y2 = y + rng.nextInt(4) - rng.nextInt(4);
-        int z2 = z + rng.nextInt(8) - rng.nextInt(8);
-        
-        int lx = x2 - xo;
-        int ly = y2;
-        int lz = z2 - zo;
-        
-        if (lx >= 0 && lx < CHUNK_SIZE_X && lz >= 0 && lz < CHUNK_SIZE_Z && ly > 0 && ly < CHUNK_SIZE_Y) {
-          if (out[lx][lz][ly] == BLOCK_AIR && out[lx][lz][ly - 1] == BLOCK_GRASS) {
-            out[lx][lz][ly] = BLOCK_ROSE;
-          }
-        }
-      }
-    }
-  }
 
   // === Underground features (MCPE 0.6.1-like ore distribution pass) ===
   // If some original tiles are missing in this port, we map to nearest analog.
