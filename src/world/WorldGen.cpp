@@ -65,6 +65,98 @@ static void placeOreVein(
   }
 }
 
+static uint8_t pickShoreMaterial(
+    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
+    int lx, int lz, int y) {
+  const uint8_t preferred[] = {
+      BLOCK_SAND, BLOCK_GRAVEL, BLOCK_DIRT, BLOCK_GRASS, BLOCK_STONE};
+
+  for (int i = 0; i < 5; ++i) {
+    uint8_t want = preferred[i];
+    if (lx > 0 && out[lx - 1][lz][y] == want) return want;
+    if (lx + 1 < CHUNK_SIZE_X && out[lx + 1][lz][y] == want) return want;
+    if (lz > 0 && out[lx][lz - 1][y] == want) return want;
+    if (lz + 1 < CHUNK_SIZE_Z && out[lx][lz + 1][y] == want) return want;
+  }
+
+  uint8_t below = out[lx][lz][y - 1];
+  if (below != BLOCK_AIR && below != BLOCK_WATER_STILL) return below;
+  return BLOCK_STONE;
+}
+
+static int countSolidHorizontalNeighbors(
+    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
+    int lx, int lz, int y) {
+  int solid = 0;
+  if (lx > 0) {
+    uint8_t b = out[lx - 1][lz][y];
+    if (b != BLOCK_AIR && b != BLOCK_WATER_STILL) solid++;
+  }
+  if (lx + 1 < CHUNK_SIZE_X) {
+    uint8_t b = out[lx + 1][lz][y];
+    if (b != BLOCK_AIR && b != BLOCK_WATER_STILL) solid++;
+  }
+  if (lz > 0) {
+    uint8_t b = out[lx][lz - 1][y];
+    if (b != BLOCK_AIR && b != BLOCK_WATER_STILL) solid++;
+  }
+  if (lz + 1 < CHUNK_SIZE_Z) {
+    uint8_t b = out[lx][lz + 1][y];
+    if (b != BLOCK_AIR && b != BLOCK_WATER_STILL) solid++;
+  }
+  return solid;
+}
+
+static void stabilizeSeaWaterAndShore(
+    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
+    int seaLevel) {
+  // MC classic/PE-style fixup: generation can leave shoreline "hanging water"
+  // pockets until liquid ticks run. Resolve at gen-time:
+  // 1) flood underwater air close to water.
+  // 2) optionally seal only *tiny* pits with matching shore material
+  //    (to avoid creating large artificial terraces).
+  //
+  // This keeps lakes/oceans visually stable right after chunk creation.
+  if (seaLevel < 1) return;
+  int maxY = seaLevel;
+  if (maxY > CHUNK_SIZE_Y - 1) maxY = CHUNK_SIZE_Y - 1;
+
+  for (int pass = 0; pass < 8; ++pass) {
+    bool changed = false;
+    for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+      for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+        for (int y = maxY; y >= 1; --y) {
+          if (out[lx][lz][y] != BLOCK_AIR) continue;
+
+          bool nearWater = false;
+          if (y < maxY && out[lx][lz][y + 1] == BLOCK_WATER_STILL) nearWater = true;
+          if (!nearWater && out[lx][lz][y - 1] == BLOCK_WATER_STILL) nearWater = true;
+          if (!nearWater && lx > 0 && out[lx - 1][lz][y] == BLOCK_WATER_STILL) nearWater = true;
+          if (!nearWater && lx + 1 < CHUNK_SIZE_X && out[lx + 1][lz][y] == BLOCK_WATER_STILL) nearWater = true;
+          if (!nearWater && lz > 0 && out[lx][lz - 1][y] == BLOCK_WATER_STILL) nearWater = true;
+          if (!nearWater && lz + 1 < CHUNK_SIZE_Z && out[lx][lz + 1][y] == BLOCK_WATER_STILL) nearWater = true;
+
+          if (nearWater) {
+            bool solidBelow = out[lx][lz][y - 1] != BLOCK_AIR &&
+                              out[lx][lz][y - 1] != BLOCK_WATER_STILL;
+            int solidSides = countSolidHorizontalNeighbors(out, lx, lz, y);
+
+            // Only seal very small enclosed shoreline potholes.
+            // Open/elongated spaces should become water.
+            if (solidBelow && solidSides >= 3) {
+              out[lx][lz][y] = pickShoreMaterial(out, lx, lz, y);
+            } else {
+              out[lx][lz][y] = BLOCK_WATER_STILL;
+            }
+            changed = true;
+          }
+        }
+      }
+    }
+    if (!changed) break;
+  }
+}
+
 // Get terrain height
 int WorldGen::getTerrainHeight(int wx, int wz, int64_t seed) {
   // MCPE-like layered terrain blend: broad continents + detail hills.
@@ -313,4 +405,7 @@ void WorldGen::generateChunk(
     int wz = zo + rng.nextInt(16);
     placeOreVein(out, cx, cz, rng, wx, wy, wz, BLOCK_LAPIS_ORE, 6);
   }
+
+  // Final underwater hole fix (prevents visible air pockets below sea level).
+  stabilizeSeaWaterAndShore(out, seaLevel);
 }
