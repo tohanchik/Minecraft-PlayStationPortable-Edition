@@ -1526,13 +1526,12 @@ static void game_render() {
     int maxBlock = sceKernelMaxFreeMemSize();
     int cpu = scePowerGetCpuClockFrequencyInt();
     int bus = scePowerGetBusClockFrequencyInt();
-    int pll = scePowerGetPllClockFrequencyInt();
 
     char line1[96], line2[96], line3[96], line4[96], line5[96];
     snprintf(line1, sizeof(line1), "FREE:%dK MAX:%dK", freeMem / 1024, maxBlock / 1024);
-    snprintf(line2, sizeof(line2), "CPU:%d BUS:%d PLL:%d", cpu, bus, pll);
-    snprintf(line3, sizeof(line3), "FB0:%08X FB1:%08X", dbg.fbp0, dbg.fbp1);
-    snprintf(line4, sizeof(line4), "Z:%08X DRW:%08X", dbg.zbp, dbg.drawBuffer);
+    snprintf(line2, sizeof(line2), "CPU:%d BUS:%d", cpu, bus);
+    snprintf(line3, sizeof(line3), "FB0:%08lX FB1:%08lX", (unsigned long)dbg.fbp0, (unsigned long)dbg.fbp1);
+    snprintf(line4, sizeof(line4), "Z:%08lX DRW:%08lX", (unsigned long)dbg.zbp, (unsigned long)dbg.drawBuffer);
     snprintf(line5, sizeof(line5), "BUF:%d SCR:%dx%d", dbg.bufWidth, dbg.scrWidth, dbg.scrHeight);
 
     const float bx = 8.0f;
