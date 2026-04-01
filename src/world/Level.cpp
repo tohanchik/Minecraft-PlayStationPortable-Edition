@@ -17,6 +17,10 @@ bool Level::isWaterBlock(uint8_t id) const {
   return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
 }
 
+bool Level::isLavaBlock(uint8_t id) const {
+  return id == BLOCK_LAVA_STILL || id == BLOCK_LAVA_FLOW;
+}
+
 void Level::setSimulationFocus(int wx, int wy, int wz, int radius) {
   m_simFocusX = wx;
   m_simFocusY = wy;
@@ -26,9 +30,10 @@ void Level::setSimulationFocus(int wx, int wy, int wz, int radius) {
 
 void Level::tick() {
   m_time += 1;
-  if (!m_waterDirty) return;
-  tickWater();
+  if (m_waterDirty) tickWater();
+  if (m_lavaDirty) tickLava();
   if (m_waterWakeTicks > 0) m_waterWakeTicks--;
+  if (m_lavaWakeTicks > 0) m_lavaWakeTicks--;
 }
 
 void Level::tickWater() {
@@ -53,6 +58,30 @@ void Level::tickWater() {
     processed++;
   }
   m_waterDirty = !m_waterTicks.empty();
+}
+
+void Level::tickLava() {
+  // Lava moves slower than water and has a lower per-tick processing budget.
+  const int maxTicksPerWorldTick = 64;
+  int processed = 0;
+  while (processed < maxTicksPerWorldTick && !m_lavaTicks.empty()) {
+    WaterTickNode n = m_lavaTicks.top();
+    if (n.dueTick > (int)m_time) break;
+    m_lavaTicks.pop();
+    if (n.idx < 0 || n.idx >= (int)m_lavaDue.size()) continue;
+    if (m_lavaDue[n.idx] != n.dueTick) continue;
+    m_lavaDue[n.idx] = -1;
+
+    int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+    int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+    int x = n.idx % maxX;
+    int tmp = n.idx / maxX;
+    int z = tmp % maxZ;
+    int y = tmp / maxZ;
+    processLavaCell(x, y, z);
+    processed++;
+  }
+  m_lavaDirty = !m_lavaTicks.empty();
 }
 
 void Level::processWaterCell(int x, int y, int z) {
@@ -193,10 +222,150 @@ void Level::processWaterCell(int x, int y, int z) {
   }
 }
 
+void Level::processLavaCell(int x, int y, int z) {
+  int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  auto inBounds = [&](int wx, int wy, int wz) {
+    return wx >= 0 && wx < maxX && wz >= 0 && wz < maxZ && wy >= 0 && wy < CHUNK_SIZE_Y;
+  };
+  if (!inBounds(x, y, z)) return;
+  uint8_t id = getBlock(x, y, z);
+  if (!isLavaBlock(id)) return;
+
+  auto getDepth = [&](int wx, int wy, int wz) -> int {
+    if (!inBounds(wx, wy, wz)) return -1;
+    uint8_t bid = getBlock(wx, wy, wz);
+    if (!isLavaBlock(bid)) return -1;
+    uint8_t d = m_lavaDepth[waterIndex(wx, wy, wz)];
+    if (d == 0xFF) d = (bid == BLOCK_LAVA_STILL) ? 0 : 1;
+    return (int)d;
+  };
+  auto isLavaBlocking = [&](int wx, int wy, int wz) -> bool {
+    if (!inBounds(wx, wy, wz)) return true;
+    uint8_t bid = getBlock(wx, wy, wz);
+    if (bid == BLOCK_AIR) return false;
+    return g_blockProps[bid].isSolid();
+  };
+  auto canSpreadTo = [&](int wx, int wy, int wz) -> bool {
+    if (!inBounds(wx, wy, wz)) return false;
+    uint8_t bid = getBlock(wx, wy, wz);
+    if (isLavaBlock(bid)) return false;
+    return !isLavaBlocking(wx, wy, wz);
+  };
+  auto setLavaCell = [&](int wx, int wy, int wz, uint8_t bid, uint8_t d) {
+    m_inWaterSimUpdate = true;
+    setBlock(wx, wy, wz, bid);
+    m_inWaterSimUpdate = false;
+    m_lavaDepth[waterIndex(wx, wy, wz)] = d;
+  };
+
+  int depth = getDepth(x, y, z);
+  if (depth < 0) return;
+  const int dropOff = 2;
+  bool becomeStatic = true;
+  int maxCount = 0;
+
+  if (depth > 0) {
+    int highest = -100;
+    static const int dx[4] = {-1, 1, 0, 0};
+    static const int dz[4] = {0, 0, -1, 1};
+    for (int i = 0; i < 4; ++i) {
+      int nd = getDepth(x + dx[i], y, z + dz[i]);
+      if (nd < 0) continue;
+      if (nd == 0) maxCount++;
+      if (nd >= 8) nd = 0;
+      if (highest < 0 || nd < highest) highest = nd;
+    }
+
+    int above = getDepth(x, y + 1, z);
+    int newDepth = highest + dropOff;
+    if (newDepth >= 8 || highest < 0) newDepth = -1;
+    if (above >= 0) newDepth = (above >= 8) ? above : (above + 8);
+
+    if (maxCount >= 2) {
+      if (isLavaBlocking(x, y - 1, z)) newDepth = 0;
+      else if (isLavaBlock(getBlock(x, y - 1, z)) && getDepth(x, y - 1, z) == 0) newDepth = 0;
+    }
+
+    if (newDepth != depth) {
+      if (newDepth < 0) {
+        setLavaCell(x, y, z, BLOCK_AIR, 0xFF);
+        wakeLavaNeighborhood(x, y, z, 12);
+        return;
+      }
+
+      depth = newDepth;
+      m_lavaDepth[waterIndex(x, y, z)] = (uint8_t)depth;
+      scheduleLavaTick(x, y, z, 12);
+      wakeLavaNeighborhood(x, y, z, 12);
+    } else {
+      if (becomeStatic) setLavaCell(x, y, z, BLOCK_LAVA_STILL, (uint8_t)depth);
+    }
+  } else {
+    setLavaCell(x, y, z, BLOCK_LAVA_STILL, 0);
+  }
+
+  if (canSpreadTo(x, y - 1, z)) {
+    int d = (depth >= 8) ? depth : (depth + 8);
+    if (d > 7) d = 7;
+    setLavaCell(x, y - 1, z, BLOCK_LAVA_FLOW, (uint8_t)d);
+    scheduleLavaTick(x, y - 1, z, 12);
+  } else if (depth >= 0 && (depth == 0 || isLavaBlocking(x, y - 1, z))) {
+    int neighbor = depth + dropOff;
+    if (depth >= 8) neighbor = 2;
+    if (neighbor >= 8) return;
+
+    static const int dx[4] = {-1, 1, 0, 0};
+    static const int dz[4] = {0, 0, -1, 1};
+    int dist[4] = {1000, 1000, 1000, 1000};
+    bool spread[4] = {false, false, false, false};
+    static const int opposite[4] = {1, 0, 3, 2};
+    const int maxSlopePass = 3;
+    std::function<int(int, int, int, int, int)> slopeDistance =
+        [&](int wx, int wy, int wz, int pass, int from) -> int {
+      int lowest = 1000;
+      for (int d = 0; d < 4; ++d) {
+        if (from >= 0 && d == opposite[from]) continue;
+        int nx = wx + dx[d], nz = wz + dz[d];
+        if (isLavaBlocking(nx, wy, nz)) continue;
+        int nd = getDepth(nx, wy, nz);
+        if (nd == 0) continue;
+        if (!isLavaBlocking(nx, wy - 1, nz)) return pass;
+        if (pass < maxSlopePass) {
+          int v = slopeDistance(nx, wy, nz, pass + 1, d);
+          if (v < lowest) lowest = v;
+        }
+      }
+      return lowest;
+    };
+
+    for (int d = 0; d < 4; ++d) {
+      int nx = x + dx[d], nz = z + dz[d];
+      if (isLavaBlocking(nx, y, nz)) continue;
+      int nd = getDepth(nx, y, nz);
+      if (nd == 0) continue;
+      if (!isLavaBlocking(nx, y - 1, nz)) dist[d] = 0;
+      else dist[d] = slopeDistance(nx, y, nz, 1, d);
+    }
+    int lowest = dist[0];
+    for (int d = 1; d < 4; ++d) if (dist[d] < lowest) lowest = dist[d];
+    for (int d = 0; d < 4; ++d) spread[d] = (dist[d] == lowest);
+    for (int d = 0; d < 4; ++d) {
+      if (!spread[d]) continue;
+      int nx = x + dx[d], nz = z + dz[d];
+      if (!canSpreadTo(nx, y, nz)) continue;
+      setLavaCell(nx, y, nz, BLOCK_LAVA_FLOW, (uint8_t)neighbor);
+      scheduleLavaTick(nx, y, nz, 12);
+    }
+  }
+}
+
 Level::Level() {
   memset(m_chunks, 0, sizeof(m_chunks));
   m_waterDepth.resize(WORLD_CHUNKS_X * CHUNK_SIZE_X * CHUNK_SIZE_Y * WORLD_CHUNKS_Z * CHUNK_SIZE_Z, 0xFF);
   m_waterDue.resize(m_waterDepth.size(), -1);
+  m_lavaDepth.resize(m_waterDepth.size(), 0xFF);
+  m_lavaDue.resize(m_waterDepth.size(), -1);
   for (int cx = 0; cx < WORLD_CHUNKS_X; cx++)
     for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++)
       m_chunks[cx][cz] = new Chunk();
@@ -252,6 +421,13 @@ uint8_t Level::getWaterDepth(int wx, int wy, int wz) const {
   return m_waterDepth[waterIndex(wx, wy, wz)];
 }
 
+uint8_t Level::getLavaDepth(int wx, int wy, int wz) const {
+  int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  if (wx < 0 || wx >= maxX || wz < 0 || wz >= maxZ || wy < 0 || wy >= CHUNK_SIZE_Y) return 0xFF;
+  return m_lavaDepth[waterIndex(wx, wy, wz)];
+}
+
 void Level::setWaterDepth(int wx, int wy, int wz, uint8_t depth) {
   int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
   int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
@@ -272,6 +448,19 @@ void Level::scheduleWaterTick(int wx, int wy, int wz, int delayTicks) {
   m_waterDirty = true;
 }
 
+void Level::scheduleLavaTick(int wx, int wy, int wz, int delayTicks) {
+  int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+  if (wx < 0 || wx >= maxX || wz < 0 || wz >= maxZ || wy < 0 || wy >= CHUNK_SIZE_Y) return;
+  int idx = waterIndex(wx, wy, wz);
+  int due = (int)m_time + delayTicks;
+  if (idx < 0 || idx >= (int)m_lavaDue.size()) return;
+  if (m_lavaDue[idx] != -1 && m_lavaDue[idx] <= due) return;
+  m_lavaDue[idx] = due;
+  m_lavaTicks.push({due, idx});
+  m_lavaDirty = true;
+}
+
 void Level::wakeWaterNeighborhood(int wx, int wy, int wz, int delayTicks) {
   static const int dx[7] = {0, -1, 1, 0, 0, 0, 0};
   static const int dy[7] = {0, 0, 0, -1, 1, 0, 0};
@@ -279,6 +468,16 @@ void Level::wakeWaterNeighborhood(int wx, int wy, int wz, int delayTicks) {
   for (int i = 0; i < 7; ++i) {
     int nx = wx + dx[i], ny = wy + dy[i], nz = wz + dz[i];
     if (isWaterBlock(getBlock(nx, ny, nz))) scheduleWaterTick(nx, ny, nz, delayTicks);
+  }
+}
+
+void Level::wakeLavaNeighborhood(int wx, int wy, int wz, int delayTicks) {
+  static const int dx[7] = {0, -1, 1, 0, 0, 0, 0};
+  static const int dy[7] = {0, 0, 0, -1, 1, 0, 0};
+  static const int dz[7] = {0, 0, 0, 0, 0, -1, 1};
+  for (int i = 0; i < 7; ++i) {
+    int nx = wx + dx[i], ny = wy + dy[i], nz = wz + dz[i];
+    if (isLavaBlock(getBlock(nx, ny, nz))) scheduleLavaTick(nx, ny, nz, delayTicks);
   }
 }
 
@@ -292,32 +491,44 @@ void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
   m_chunks[cx][cz]->setBlock(wx & 0xF, wy, wz & 0xF, id);
   if (isWaterBlock(id)) {
     setWaterDepth(wx, wy, wz, (id == BLOCK_WATER_STILL) ? 0 : 1);
+    m_lavaDepth[waterIndex(wx, wy, wz)] = 0xFF;
+  } else if (isLavaBlock(id)) {
+    m_lavaDepth[waterIndex(wx, wy, wz)] = (id == BLOCK_LAVA_STILL) ? 0 : 1;
+    setWaterDepth(wx, wy, wz, 0xFF);
   } else {
     setWaterDepth(wx, wy, wz, 0xFF);
+    m_lavaDepth[waterIndex(wx, wy, wz)] = 0xFF;
   }
 
-  bool touchesWater = isWaterBlock(oldId) || isWaterBlock(id);
-  if (!touchesWater) {
+  bool touchesFluid = isWaterBlock(oldId) || isWaterBlock(id) || isLavaBlock(oldId) || isLavaBlock(id);
+  if (!touchesFluid) {
     static const int dx[6] = {-1, 1, 0, 0, 0, 0};
     static const int dy[6] = {0, 0, -1, 1, 0, 0};
     static const int dz[6] = {0, 0, 0, 0, -1, 1};
     for (int i = 0; i < 6; ++i) {
       int nx = wx + dx[i], ny = wy + dy[i], nz = wz + dz[i];
       if (ny < 0 || ny >= CHUNK_SIZE_Y) continue;
-      if (isWaterBlock(getBlock(nx, ny, nz))) {
-        touchesWater = true;
+      uint8_t n = getBlock(nx, ny, nz);
+      if (isWaterBlock(n) || isLavaBlock(n)) {
+        touchesFluid = true;
         break;
       }
     }
   }
-  if (touchesWater) {
+  if (touchesFluid) {
     if (!m_inWaterSimUpdate) {
       m_waterDirty = true;
+      m_lavaDirty = true;
       m_waterWakeX = wx;
       m_waterWakeY = wy;
       m_waterWakeZ = wz;
       m_waterWakeTicks = 16;
+      m_lavaWakeX = wx;
+      m_lavaWakeY = wy;
+      m_lavaWakeZ = wz;
+      m_lavaWakeTicks = 20;
       wakeWaterNeighborhood(wx, wy, wz, 5);
+      wakeLavaNeighborhood(wx, wy, wz, 12);
     }
   }
 
@@ -401,7 +612,7 @@ bool Level::saveToFile(const char *path) const {
   } hdr;
 
   memcpy(hdr.magic, "MCPSPWLD", 8);
-  hdr.version = 1;
+  hdr.version = 3;
   hdr.chunksX = WORLD_CHUNKS_X;
   hdr.chunksZ = WORLD_CHUNKS_Z;
   hdr.chunkY = CHUNK_SIZE_Y;
@@ -419,6 +630,12 @@ bool Level::saveToFile(const char *path) const {
 
   if (!m_waterDepth.empty()) {
     if (fwrite(m_waterDepth.data(), 1, m_waterDepth.size(), f) != m_waterDepth.size()) {
+      fclose(f);
+      return false;
+    }
+  }
+  if (!m_lavaDepth.empty()) {
+    if (fwrite(m_lavaDepth.data(), 1, m_lavaDepth.size(), f) != m_lavaDepth.size()) {
       fclose(f);
       return false;
     }
@@ -445,7 +662,7 @@ bool Level::loadFromFile(const char *path) {
   } hdr;
 
   if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
-  if (memcmp(hdr.magic, "MCPSPWLD", 8) != 0 || (hdr.version != 1 && hdr.version != 2)) { fclose(f); return false; }
+  if (memcmp(hdr.magic, "MCPSPWLD", 8) != 0 || (hdr.version != 1 && hdr.version != 2 && hdr.version != 3)) { fclose(f); return false; }
   if (hdr.chunksX != WORLD_CHUNKS_X || hdr.chunksZ != WORLD_CHUNKS_Z || hdr.chunkY != CHUNK_SIZE_Y) { fclose(f); return false; }
   if (hdr.waterSize != m_waterDepth.size()) { fclose(f); return false; }
 
@@ -466,19 +683,35 @@ bool Level::loadFromFile(const char *path) {
       return false;
     }
   }
+  if (hdr.version >= 3 && !m_lavaDepth.empty()) {
+    if (fread(m_lavaDepth.data(), 1, m_lavaDepth.size(), f) != m_lavaDepth.size()) {
+      fclose(f);
+      return false;
+    }
+  }
 
   fclose(f);
   m_time = hdr.time;
   while (!m_waterTicks.empty()) m_waterTicks.pop();
+  while (!m_lavaTicks.empty()) m_lavaTicks.pop();
   std::fill(m_waterDue.begin(), m_waterDue.end(), -1);
+  std::fill(m_lavaDue.begin(), m_lavaDue.end(), -1);
   for (int y = 0; y < CHUNK_SIZE_Y; ++y) {
     for (int z = 0; z < WORLD_CHUNKS_Z * CHUNK_SIZE_Z; ++z) {
       for (int x = 0; x < WORLD_CHUNKS_X * CHUNK_SIZE_X; ++x) {
-        if (isWaterBlock(getBlock(x, y, z))) scheduleWaterTick(x, y, z, 1);
+        uint8_t id = getBlock(x, y, z);
+        if (isWaterBlock(id)) scheduleWaterTick(x, y, z, 1);
+        else if (isLavaBlock(id)) {
+          if (hdr.version < 3) m_lavaDepth[waterIndex(x, y, z)] = (id == BLOCK_LAVA_STILL) ? 0 : 1;
+          scheduleLavaTick(x, y, z, 4);
+        } else if (hdr.version < 3) {
+          m_lavaDepth[waterIndex(x, y, z)] = 0xFF;
+        }
       }
     }
   }
   m_waterDirty = !m_waterTicks.empty();
+  m_lavaDirty = !m_lavaTicks.empty();
   return true;
 }
 
@@ -522,11 +755,16 @@ void Level::generate(Random *rng) {
         if (id == BLOCK_WATER_STILL) setWaterDepth(x, y, z, 0);
         else if (id == BLOCK_WATER_FLOW) setWaterDepth(x, y, z, 1);
         else setWaterDepth(x, y, z, 0xFF);
+        if (id == BLOCK_LAVA_STILL) m_lavaDepth[waterIndex(x, y, z)] = 0;
+        else if (id == BLOCK_LAVA_FLOW) m_lavaDepth[waterIndex(x, y, z)] = 1;
+        else m_lavaDepth[waterIndex(x, y, z)] = 0xFF;
       }
     }
   }
   while (!m_waterTicks.empty()) m_waterTicks.pop();
+  while (!m_lavaTicks.empty()) m_lavaTicks.pop();
   std::fill(m_waterDue.begin(), m_waterDue.end(), -1);
+  std::fill(m_lavaDue.begin(), m_lavaDue.end(), -1);
 
   computeLighting();
 }
