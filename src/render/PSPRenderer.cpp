@@ -139,6 +139,22 @@ void PSPRenderer_GetViewProjMatrix(ScePspFMatrix4 *outVP) {
   sceGumMatrixMode(GU_MODEL);
 }
 
+void PSPRenderer_GetDebugInfo(PSPRendererDebugInfo *outInfo) {
+  if (!outInfo) return;
+  outInfo->fbp0 = (uint32_t)g_fbp0;
+  outInfo->fbp1 = (uint32_t)g_fbp1;
+  outInfo->zbp = (uint32_t)g_zbp;
+  outInfo->drawBuffer = (uint32_t)g_drawBuffer;
+  outInfo->bufWidth = BUF_WIDTH;
+  outInfo->scrWidth = SCR_WIDTH;
+  outInfo->scrHeight = SCR_HEIGHT;
+}
+
+void PSPRenderer_DialogSwapBuffers() {
+  sceGuSwapBuffers();
+  g_drawBuffer = (g_drawBuffer == g_fbp0) ? g_fbp1 : g_fbp0;
+}
+
 void *PSPRenderer_EndFrame() {
   sceGuFinish();
   sceGuSync(0, 0);

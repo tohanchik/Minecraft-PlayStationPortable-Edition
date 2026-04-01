@@ -17,6 +17,32 @@ static CraftPSPVertex g_transBuf[SUBCHUNK_COUNT][MAX_VERTS_PER_SUB_CHUNK];
 static CraftPSPVertex g_transFancyBuf[SUBCHUNK_COUNT][MAX_VERTS_PER_SUB_CHUNK];
 static CraftPSPVertex g_emitBuf[SUBCHUNK_COUNT][MAX_VERTS_PER_SUB_CHUNK];
 
+static bool uploadMeshSafe(CraftPSPVertex *&dst, int &dstCount, int &dstCap,
+                           int newCount, int growPad, CraftPSPVertex *src) {
+  if (newCount <= 0) {
+    dstCount = 0;
+    return true;
+  }
+
+  CraftPSPVertex *target = dst;
+  int targetCap = dstCap;
+  if (newCount > targetCap) {
+    int nextCap = newCount + growPad;
+    CraftPSPVertex *newBuf = (CraftPSPVertex *)memalign(16, nextCap * sizeof(CraftPSPVertex));
+    if (!newBuf) return false; // keep previous mesh if allocation fails
+    if (dst) free(dst);
+    target = newBuf;
+    targetCap = nextCap;
+  }
+
+  memcpy(target, src, newCount * sizeof(CraftPSPVertex));
+  sceKernelDcacheWritebackInvalidateRange(target, newCount * sizeof(CraftPSPVertex));
+  dst = target;
+  dstCap = targetCap;
+  dstCount = newCount;
+  return true;
+}
+
 ChunkRenderer::ChunkRenderer(TextureAtlas *atlas)
     : m_level(nullptr), m_atlas(atlas), m_compileStep(0), m_compileChunk(nullptr), m_compileSy(-1) {}
 
@@ -110,76 +136,17 @@ void ChunkRenderer::processCompileQueue(float camX, float camY, float camZ) {
     Chunk* c = m_compileChunk;
     int sy = m_compileSy;
 
-    c->dirty[sy] = false;
+    int newOpaque = m_opaqueTess.end();
+    int newTrans = m_transTess.end();
+    int newFancy = m_transFancyTess.end();
+    int newEmit = m_emitTess.end();
+    bool ok = true;
+    ok &= uploadMeshSafe(c->opaqueVertices[sy], c->opaqueTriCount[sy], c->opaqueCapacity[sy], newOpaque, 250, g_opaqueBuf[sy]);
+    ok &= uploadMeshSafe(c->transVertices[sy], c->transTriCount[sy], c->transCapacity[sy], newTrans, 250, g_transBuf[sy]);
+    ok &= uploadMeshSafe(c->transFancyVertices[sy], c->transFancyTriCount[sy], c->transFancyCapacity[sy], newFancy, 250, g_transFancyBuf[sy]);
+    ok &= uploadMeshSafe(c->emitVertices[sy], c->emitTriCount[sy], c->emitCapacity[sy], newEmit, 100, g_emitBuf[sy]);
 
-    c->opaqueTriCount[sy] = m_opaqueTess.end();
-    c->transTriCount[sy] = m_transTess.end();
-    c->transFancyTriCount[sy] = m_transFancyTess.end();
-
-    // Opaque Buffer
-    if (c->opaqueTriCount[sy] > 0) {
-      if (c->opaqueTriCount[sy] > c->opaqueCapacity[sy]) {
-        if (c->opaqueVertices[sy]) free(c->opaqueVertices[sy]);
-        c->opaqueCapacity[sy] = c->opaqueTriCount[sy] + 250; 
-        c->opaqueVertices[sy] = (CraftPSPVertex *)memalign(16, c->opaqueCapacity[sy] * sizeof(CraftPSPVertex));
-      }
-      if (c->opaqueVertices[sy]) {
-        memcpy(c->opaqueVertices[sy], g_opaqueBuf[sy], c->opaqueTriCount[sy] * sizeof(CraftPSPVertex));
-        sceKernelDcacheWritebackInvalidateRange(c->opaqueVertices[sy], c->opaqueTriCount[sy] * sizeof(CraftPSPVertex));
-      } else {
-        c->opaqueTriCount[sy] = 0;
-        c->opaqueCapacity[sy] = 0;
-      }
-    }
-
-    // Transparent Buffer (Outer Leaves, Glass, Water)
-    if (c->transTriCount[sy] > 0) {
-      if (c->transTriCount[sy] > c->transCapacity[sy]) {
-        if (c->transVertices[sy]) free(c->transVertices[sy]);
-        c->transCapacity[sy] = c->transTriCount[sy] + 250;
-        c->transVertices[sy] = (CraftPSPVertex *)memalign(16, c->transCapacity[sy] * sizeof(CraftPSPVertex));
-      }
-      if (c->transVertices[sy]) {
-        memcpy(c->transVertices[sy], g_transBuf[sy], c->transTriCount[sy] * sizeof(CraftPSPVertex));
-        sceKernelDcacheWritebackInvalidateRange(c->transVertices[sy], c->transTriCount[sy] * sizeof(CraftPSPVertex));
-      } else {
-        c->transTriCount[sy] = 0;
-        c->transCapacity[sy] = 0;
-      }
-    }
-
-    // Transparent FANCY Buffer (Inner Leaves)
-    if (c->transFancyTriCount[sy] > 0) {
-      if (c->transFancyTriCount[sy] > c->transFancyCapacity[sy]) {
-        if (c->transFancyVertices[sy]) free(c->transFancyVertices[sy]);
-        c->transFancyCapacity[sy] = c->transFancyTriCount[sy] + 250;
-        c->transFancyVertices[sy] = (CraftPSPVertex *)memalign(16, c->transFancyCapacity[sy] * sizeof(CraftPSPVertex));
-      }
-      if (c->transFancyVertices[sy]) {
-        memcpy(c->transFancyVertices[sy], g_transFancyBuf[sy], c->transFancyTriCount[sy] * sizeof(CraftPSPVertex));
-        sceKernelDcacheWritebackInvalidateRange(c->transFancyVertices[sy], c->transFancyTriCount[sy] * sizeof(CraftPSPVertex));
-      } else {
-        c->transFancyTriCount[sy] = 0;
-        c->transFancyCapacity[sy] = 0;
-      }
-    }
-
-    // Emit buffer
-    c->emitTriCount[sy] = m_emitTess.end();
-    if (c->emitTriCount[sy] > 0) {
-      if (c->emitTriCount[sy] > c->emitCapacity[sy]) {
-        if (c->emitVertices[sy]) free(c->emitVertices[sy]);
-        c->emitCapacity[sy] = c->emitTriCount[sy] + 100;
-        c->emitVertices[sy] = (CraftPSPVertex *)memalign(16, c->emitCapacity[sy] * sizeof(CraftPSPVertex));
-      }
-      if (c->emitVertices[sy]) {
-        memcpy(c->emitVertices[sy], g_emitBuf[sy], c->emitTriCount[sy] * sizeof(CraftPSPVertex));
-        sceKernelDcacheWritebackInvalidateRange(c->emitVertices[sy], c->emitTriCount[sy] * sizeof(CraftPSPVertex));
-      } else {
-        c->emitTriCount[sy] = 0;
-        c->emitCapacity[sy] = 0;
-      }
-    }
+    c->dirty[sy] = !ok;
 
     m_compileStep = 0;
     m_compileChunk = nullptr;
@@ -196,31 +163,16 @@ void ChunkRenderer::processCompileQueue(float camX, float camY, float camZ) {
 // Finish tessellation and upload vertex data
 static void flushSubChunk(Chunk *c, int sy,
                           Tesselator &opT, Tesselator &trT, Tesselator &tfT, Tesselator &emT) {
-  c->dirty[sy] = false;
-
-  c->opaqueTriCount[sy] = opT.end();
-  c->transTriCount[sy]  = trT.end();
-  c->transFancyTriCount[sy] = tfT.end();
-  c->emitTriCount[sy]   = emT.end();
-
-  auto upload = [](CraftPSPVertex *&buf, int &count, int &cap, CraftPSPVertex *src) {
-    if (count <= 0) return;
-    if (count > cap) {
-      if (buf) free(buf);
-      cap = count + 250;
-      buf = (CraftPSPVertex *)memalign(16, cap * sizeof(CraftPSPVertex));
-    }
-    if (buf) {
-      memcpy(buf, src, count * sizeof(CraftPSPVertex));
-      sceKernelDcacheWritebackInvalidateRange(buf, count * sizeof(CraftPSPVertex));
-    } else {
-      count = 0; cap = 0;
-    }
-  };
-  upload(c->opaqueVertices[sy],    c->opaqueTriCount[sy],    c->opaqueCapacity[sy],    g_opaqueBuf[sy]);
-  upload(c->transVertices[sy],     c->transTriCount[sy],     c->transCapacity[sy],     g_transBuf[sy]);
-  upload(c->transFancyVertices[sy],c->transFancyTriCount[sy],c->transFancyCapacity[sy],g_transFancyBuf[sy]);
-  upload(c->emitVertices[sy],      c->emitTriCount[sy],      c->emitCapacity[sy],      g_emitBuf[sy]);
+  int newOpaque = opT.end();
+  int newTrans = trT.end();
+  int newFancy = tfT.end();
+  int newEmit = emT.end();
+  bool ok = true;
+  ok &= uploadMeshSafe(c->opaqueVertices[sy], c->opaqueTriCount[sy], c->opaqueCapacity[sy], newOpaque, 250, g_opaqueBuf[sy]);
+  ok &= uploadMeshSafe(c->transVertices[sy], c->transTriCount[sy], c->transCapacity[sy], newTrans, 250, g_transBuf[sy]);
+  ok &= uploadMeshSafe(c->transFancyVertices[sy], c->transFancyTriCount[sy], c->transFancyCapacity[sy], newFancy, 250, g_transFancyBuf[sy]);
+  ok &= uploadMeshSafe(c->emitVertices[sy], c->emitTriCount[sy], c->emitCapacity[sy], newEmit, 100, g_emitBuf[sy]);
+  c->dirty[sy] = !ok;
 }
 
 void ChunkRenderer::rebuildChunkNow(int cx, int cz, int sy) {
@@ -288,8 +240,10 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
         continue;
 
       for (int sy = 0; sy < SUBCHUNK_COUNT; sy++) {
-        if ((c->opaqueTriCount[sy] == 0 && c->transTriCount[sy] == 0 && c->transFancyTriCount[sy] == 0) ||
-            (!c->opaqueVertices[sy] && !c->transVertices[sy] && !c->transFancyVertices[sy]))
+        if ((c->opaqueTriCount[sy] == 0 && c->transTriCount[sy] == 0 &&
+             c->transFancyTriCount[sy] == 0 && c->emitTriCount[sy] == 0) ||
+            (!c->opaqueVertices[sy] && !c->transVertices[sy] &&
+             !c->transFancyVertices[sy] && !c->emitVertices[sy]))
           continue;
 
         float chunkCenterX = c->cx * CHUNK_SIZE_X + CHUNK_SIZE_X / 2.0f;
