@@ -110,6 +110,7 @@ void Blocks_Init() {
   DEF_PROPS(BLOCK_REEDS, 0, 0, 0, TRANSP);
   DEF_PROPS(BLOCK_PUMPKIN, 10, 0, 15, SOLID);
   DEF_PROPS(BLOCK_REDSTONE_ORE, 30, 0, 15, SOLID);
+  DEF_PROPS(BLOCK_EMERALD_ORE, 30, 0, 15, SOLID);
   DEF_PROPS(BLOCK_SOULSAND, 5, 0, 15, SOLID);
 
   // Custom hitboxes
@@ -186,6 +187,9 @@ void Blocks_Init() {
   DEF_UV(BLOCK_PUMPKIN, 6, 6, 7, 7, 6, 6);
   DEF_UV(BLOCK_REEDS, 9, 4, 9, 4, 9, 4);
   DEF_UV(BLOCK_REDSTONE_ORE, 3, 3, 3, 3, 3, 3);
+  // Emerald ore texture (user-provided atlas hint): row 11, col 12 (1-based)
+  // -> zero-based x=11, y=10.
+  DEF_UV(BLOCK_EMERALD_ORE, 11, 10, 11, 10, 11, 10);
   // Cross-sprite plants (UV tile used for all quads in the X-pattern)
   DEF_UV(BLOCK_TALLGRASS, 7, 2, 7, 2, 7, 2);    // tallgrass col=7, row=2
   DEF_UV(BLOCK_FLOWER, 13, 0, 13, 0, 13, 0); // dandelion col=13, row=0
