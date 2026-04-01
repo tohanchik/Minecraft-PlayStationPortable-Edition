@@ -9,6 +9,8 @@
 #include <pspiofilemgr.h>
 #include <pspkernel.h>
 #include <psppower.h>
+#include <psputility.h>
+#include <psputility_osk.h>
 
 #include "input/PSPInput.h"
 #include "render/BlockHighlight.h"
@@ -107,6 +109,8 @@ static const float kAutoSaveIntervalSec = 60.0f;
 static bool kEnableInvTuneMode = false; // Runtime-loaded from inv_tune_mode.cfg.
 static bool g_invTuneMode = false;
 static int g_invTuneTarget = 0; // 0=GRID, 1=HOTBAR, 2=DELETE, 3=TITLE
+static int g_lastSunLightBucket = -1;
+static bool g_showPSPDebugInfo = true;
 static float g_invCellStep = 21.300f;
 static float g_invStretchX = 0.750f;
 static float g_invCompressY = 1.100f;
@@ -585,6 +589,134 @@ static void setStatusMessage(const char *msg, float seconds, uint32_t color = 0x
   g_statusColor = color;
 }
 
+static void markAllChunksDirtyForRelight() {
+  if (!g_level) return;
+  for (int cx = 0; cx < WORLD_CHUNKS_X; ++cx) {
+    for (int cz = 0; cz < WORLD_CHUNKS_Z; ++cz) {
+      Chunk *ch = g_level->getChunk(cx, cz);
+      if (!ch) continue;
+      for (int sy = 0; sy < SUBCHUNK_COUNT; ++sy) ch->dirty[sy] = true;
+    }
+  }
+}
+
+static void asciiToUtf16(const char *src, unsigned short *dst, int maxChars) {
+  if (!dst || maxChars <= 0) return;
+  int i = 0;
+  if (src) {
+    while (src[i] && i < maxChars - 1) {
+      dst[i] = (unsigned short)(unsigned char)src[i];
+      ++i;
+    }
+  }
+  dst[i] = 0;
+}
+
+static void utf16ToAscii(const unsigned short *src, char *dst, int maxChars) {
+  if (!dst || maxChars <= 0) return;
+  int i = 0;
+  if (src) {
+    while (src[i] && i < maxChars - 1) {
+      unsigned short c = src[i];
+      dst[i] = (c < 0x80) ? (char)c : '?';
+      ++i;
+    }
+  }
+  dst[i] = '\0';
+}
+
+static bool showCommandKeyboard(char *out, int outSize) {
+  if (!out || outSize <= 1) return false;
+  out[0] = '\0';
+
+  static unsigned short inText[128];
+  static unsigned short outText[128];
+  static unsigned short descText[32];
+  static unsigned short initText[2];
+  asciiToUtf16("Command (/time set day)", descText, (int)(sizeof(descText) / sizeof(descText[0])));
+  asciiToUtf16("", initText, (int)(sizeof(initText) / sizeof(initText[0])));
+  memset(inText, 0, sizeof(inText));
+  memset(outText, 0, sizeof(outText));
+
+  SceUtilityOskData oskData;
+  memset(&oskData, 0, sizeof(oskData));
+  oskData.language = PSP_UTILITY_OSK_LANGUAGE_ENGLISH;
+  oskData.lines = 1;
+  oskData.unk_24 = 1;
+  oskData.inputtype = PSP_UTILITY_OSK_INPUTTYPE_ALL;
+  oskData.desc = descText;
+  oskData.intext = initText;
+  oskData.outtextlength = (int)(sizeof(outText) / sizeof(outText[0]));
+  oskData.outtextlimit = oskData.outtextlength - 1;
+  oskData.outtext = outText;
+
+  SceUtilityOskParams params;
+  memset(&params, 0, sizeof(params));
+  params.base.size = sizeof(params);
+  sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_LANGUAGE, &params.base.language);
+  sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_UNKNOWN, &params.base.buttonSwap);
+  params.base.graphicsThread = 17;
+  params.base.accessThread = 19;
+  params.base.fontThread = 18;
+  params.base.soundThread = 16;
+  params.datacount = 1;
+  params.data = &oskData;
+
+  int ret = sceUtilityOskInitStart(&params);
+  if (ret < 0) return false;
+  static unsigned int __attribute__((aligned(16))) oskList[262144];
+
+  while (true) {
+    sceGuStart(GU_DIRECT, oskList);
+    sceGuClearColor(0xFF000000);
+    sceGuClearDepth(0);
+    sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+    sceGuFinish();
+    sceGuSync(0, 0);
+
+    sceUtilityOskUpdate(1);
+    sceDisplayWaitVblankStart();
+    PSPRenderer_DialogSwapBuffers();
+
+    int status = sceUtilityOskGetStatus();
+    if (status == PSP_UTILITY_DIALOG_VISIBLE) continue;
+    if (status == PSP_UTILITY_DIALOG_QUIT) {
+      sceUtilityOskShutdownStart();
+    } else if (status == PSP_UTILITY_DIALOG_FINISHED || status == PSP_UTILITY_DIALOG_NONE) {
+      break;
+    }
+  }
+
+  if (oskData.result != PSP_UTILITY_OSK_RESULT_CHANGED) return false;
+  utf16ToAscii(outText, out, outSize);
+  return out[0] != '\0';
+}
+
+static void executeConsoleCommand(const char *rawCmd) {
+  if (!rawCmd || !rawCmd[0]) return;
+
+  char cmd[128];
+  snprintf(cmd, sizeof(cmd), "%s", rawCmd);
+  for (int i = 0; cmd[i]; ++i) cmd[i] = (char)tolower((unsigned char)cmd[i]);
+
+  if (cmd[0] != '/') {
+    setStatusMessage("Commands must start with /", 2.5f, 0xFF60A0FF);
+    return;
+  }
+  if (strcmp(cmd, "/time set day") == 0) {
+    if (g_level) g_level->setTime((g_level->getDay() * TICKS_PER_DAY) + 1000LL);
+    setStatusMessage("Set time: day", 2.0f, 0xFF80FF80);
+    return;
+  }
+  if (strcmp(cmd, "/time set night") == 0) {
+    if (g_level) g_level->setTime((g_level->getDay() * TICKS_PER_DAY) + 13000LL);
+    setStatusMessage("Set time: night", 2.0f, 0xFF80FF80);
+    return;
+  }
+
+  setStatusMessage("Unknown command", 2.0f, 0xFF6060FF);
+}
+
 static int firstExistingWorldSlot() {
   for (int i = 0; i < kMaxWorldSlots; ++i) {
     if (g_worldExists[i]) return i;
@@ -780,6 +912,7 @@ static bool game_init() {
   // Player start position
   resetPlayerStateForNewWorld();
   g_heldBlock = g_creativeInv.heldBlock();
+  g_lastSunLightBucket = -1;
   return true;
 }
 
@@ -865,6 +998,12 @@ static void game_update(float dt) {
     return;
   }
 
+  if (PSPInput_IsHeld(PSP_CTRL_SELECT) && PSPInput_JustPressed(PSP_CTRL_START) && !g_pauseOpen) {
+    char cmd[128];
+    if (showCommandKeyboard(cmd, sizeof(cmd))) executeConsoleCommand(cmd);
+    return;
+  }
+
   if (PSPInput_JustPressed(PSP_CTRL_START) && !g_pauseOpen) {
     g_pauseOpen = true;
     g_pauseSel = 0;
@@ -912,6 +1051,14 @@ static void game_update(float dt) {
     g_tickAlpha = s_levelTickAccum / tickStep;
     if (g_tickAlpha < 0.0f) g_tickAlpha = 0.0f;
     if (g_tickAlpha > 1.0f) g_tickAlpha = 1.0f;
+
+    int sunBucket = (int)(g_level->getSunBrightness() * 15.0f + 0.5f);
+    if (g_lastSunLightBucket < 0) {
+      g_lastSunLightBucket = sunBucket;
+    } else if (sunBucket != g_lastSunLightBucket) {
+      markAllChunksDirtyForRelight();
+      g_lastSunLightBucket = sunBucket;
+    }
 
     if (!g_creativeInv.isOpen() && !g_pauseOpen) {
       g_autoSaveTimer += dt;
@@ -1371,6 +1518,30 @@ static void game_render() {
     snprintf(tpsText, sizeof(tpsText), "TPS: %.1f", g_tpsDisplay);
     hudDrawRect(8.0f, 8.0f, 78.0f, 14.0f, 0x90000000);
     hudDrawText5x7(12.0f, 11.0f, tpsText, 0xFF80FF80, 1.0f);
+  }
+  if (g_showPSPDebugInfo) {
+    PSPRendererDebugInfo dbg;
+    PSPRenderer_GetDebugInfo(&dbg);
+    int freeMem = sceKernelTotalFreeMemSize();
+    int maxBlock = sceKernelMaxFreeMemSize();
+    int cpu = scePowerGetCpuClockFrequencyInt();
+    int bus = scePowerGetBusClockFrequencyInt();
+
+    char line1[96], line2[96], line3[96], line4[96], line5[96];
+    snprintf(line1, sizeof(line1), "FREE:%dK MAX:%dK", freeMem / 1024, maxBlock / 1024);
+    snprintf(line2, sizeof(line2), "CPU:%d BUS:%d", cpu, bus);
+    snprintf(line3, sizeof(line3), "FB0:%08lX FB1:%08lX", (unsigned long)dbg.fbp0, (unsigned long)dbg.fbp1);
+    snprintf(line4, sizeof(line4), "Z:%08lX DRW:%08lX", (unsigned long)dbg.zbp, (unsigned long)dbg.drawBuffer);
+    snprintf(line5, sizeof(line5), "BUF:%d SCR:%dx%d", dbg.bufWidth, dbg.scrWidth, dbg.scrHeight);
+
+    const float bx = 8.0f;
+    const float by = 232.0f;
+    hudDrawRect(bx, by, 220.0f, 38.0f, 0x90000000);
+    hudDrawText5x7(bx + 4.0f, by + 2.0f, line1, 0xFFFFFFFF, 0.85f);
+    hudDrawText5x7(bx + 4.0f, by + 9.0f, line2, 0xFFFFFFFF, 0.85f);
+    hudDrawText5x7(bx + 4.0f, by + 16.0f, line3, 0xFFC0FFC0, 0.85f);
+    hudDrawText5x7(bx + 4.0f, by + 23.0f, line4, 0xFFC0FFC0, 0.85f);
+    hudDrawText5x7(bx + 4.0f, by + 30.0f, line5, 0xFFC0FFC0, 0.85f);
   }
   sceGuDisable(GU_BLEND);
   sceGuEnable(GU_CULL_FACE);
