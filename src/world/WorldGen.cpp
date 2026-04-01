@@ -14,6 +14,26 @@ static inline bool inChunk(int lx, int ly, int lz) {
          ly > 0 && ly < CHUNK_SIZE_Y;
 }
 
+static inline bool isAirOrWater(uint8_t id) {
+  return id == BLOCK_AIR || id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
+}
+
+static int topSolidY(
+    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
+    int lx, int lz) {
+  for (int y = CHUNK_SIZE_Y - 1; y >= 0; --y) {
+    if (!isAirOrWater(out[lx][lz][y])) return y;
+  }
+  return 0;
+}
+
+static uint8_t shoreFillFromTop(uint8_t topId) {
+  if (topId == BLOCK_SAND || topId == BLOCK_GRAVEL || topId == BLOCK_STONE) return topId;
+  if (topId == BLOCK_GRASS) return BLOCK_DIRT;
+  if (topId == BLOCK_DIRT) return BLOCK_DIRT;
+  return BLOCK_DIRT;
+}
+
 static void placeOreVein(
     uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
     int cx, int cz, Random &rng, int wx, int wy, int wz, uint8_t oreId, int veinSize) {
@@ -181,6 +201,51 @@ void WorldGen::generateChunk(
     }
   }
 
+  // === Shoreline smoothing near sea level ===
+  // Build a small "natural rim" around water and avoid immediate drops right
+  // behind the coast (which looks like a dam/wall).
+  int distToWater[CHUNK_SIZE_X][CHUNK_SIZE_Z];
+  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx)
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz)
+      distToWater[lx][lz] = 99;
+
+  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+      if (out[lx][lz][seaLevel] == BLOCK_WATER_STILL) distToWater[lx][lz] = 0;
+    }
+  }
+  for (int pass = 0; pass < 2; ++pass) {
+    for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+      for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+        int d = distToWater[lx][lz];
+        if (d >= 2) continue;
+        if (lx > 0 && distToWater[lx - 1][lz] > d + 1) distToWater[lx - 1][lz] = d + 1;
+        if (lx + 1 < CHUNK_SIZE_X && distToWater[lx + 1][lz] > d + 1) distToWater[lx + 1][lz] = d + 1;
+        if (lz > 0 && distToWater[lx][lz - 1] > d + 1) distToWater[lx][lz - 1] = d + 1;
+        if (lz + 1 < CHUNK_SIZE_Z && distToWater[lx][lz + 1] > d + 1) distToWater[lx][lz + 1] = d + 1;
+      }
+    }
+  }
+
+  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+      int d = distToWater[lx][lz];
+      if (d <= 0 || d > 2) continue;
+      if (out[lx][lz][seaLevel] == BLOCK_WATER_STILL) continue;
+
+      int topY = topSolidY(out, lx, lz);
+      if (topY <= 0) continue;
+      uint8_t fillId = shoreFillFromTop(out[lx][lz][topY]);
+
+      int target = (d == 1) ? seaLevel : (seaLevel - 1);
+      if (topY >= target) continue;
+
+      for (int y = topY + 1; y <= target && y < CHUNK_SIZE_Y; ++y) {
+        if (isAirOrWater(out[lx][lz][y])) out[lx][lz][y] = fillId;
+      }
+    }
+  }
+
   // === Vegetation ===
   int xo = cx * CHUNK_SIZE_X;
   int zo = cz * CHUNK_SIZE_Z;
@@ -313,4 +378,5 @@ void WorldGen::generateChunk(
     int wz = zo + rng.nextInt(16);
     placeOreVein(out, cx, cz, rng, wx, wy, wz, BLOCK_LAPIS_ORE, 6);
   }
+
 }
