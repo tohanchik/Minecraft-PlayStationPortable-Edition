@@ -130,4 +130,6 @@ private:
   bool m_inWaterSimUpdate = false;
   bool m_suspendLightingUpdates = false;
   std::deque<int> m_lightUpdateQueue;
+  bool m_lightingDirty = true;
+  long long m_nextLightingRebuildTick = 0;
 };
