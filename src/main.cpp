@@ -83,7 +83,6 @@ static uint8_t g_heldBlock = BLOCK_COBBLESTONE; // Block to place
 static CreativeInventory g_creativeInv;
 static const char *g_inventoryHoverName = nullptr;
 static float g_tickAlpha = 0.0f;
-static float g_tpsDisplay = 20.0f;
 static const char *kWorldDir = "ms0:/PSP/GAME/MinecraftPSP/worlds";
 static const char *kInvLayoutCfgPath = "ms0:/PSP/GAME/MinecraftPSP/inv_layout.cfg";
 static const char *kInvTuneCfgPath = "ms0:/PSP/GAME/MinecraftPSP/inv_tune_mode.cfg";
@@ -110,7 +109,6 @@ static bool kEnableInvTuneMode = false; // Runtime-loaded from inv_tune_mode.cfg
 static bool g_invTuneMode = false;
 static int g_invTuneTarget = 0; // 0=GRID, 1=HOTBAR, 2=DELETE, 3=TITLE
 static int g_lastSunLightBucket = -1;
-static bool g_showPSPDebugInfo = true;
 static float g_invCellStep = 21.300f;
 static float g_invStretchX = 0.750f;
 static float g_invCompressY = 1.100f;
@@ -1042,12 +1040,6 @@ static void game_update(float dt) {
       s_levelTickAccum -= tickStep;
       ticks++;
     }
-    if (dt > 0.0001f) {
-      float instTps = (float)ticks / dt;
-      g_tpsDisplay = g_tpsDisplay * 0.85f + instTps * 0.15f;
-      if (g_tpsDisplay > 20.0f) g_tpsDisplay = 20.0f;
-      if (g_tpsDisplay < 0.0f) g_tpsDisplay = 0.0f;
-    }
     g_tickAlpha = s_levelTickAccum / tickStep;
     if (g_tickAlpha < 0.0f) g_tickAlpha = 0.0f;
     if (g_tickAlpha > 1.0f) g_tickAlpha = 1.0f;
@@ -1512,36 +1504,6 @@ static void game_render() {
   if (g_statusTimer > 0.0f && g_statusText[0]) {
     hudDrawRect(120.0f, 12.0f, 240.0f, 16.0f, 0xA0000000);
     hudDrawText5x7(128.0f, 16.0f, g_statusText, g_statusColor, 1.1f);
-  }
-  {
-    char tpsText[32];
-    snprintf(tpsText, sizeof(tpsText), "TPS: %.1f", g_tpsDisplay);
-    hudDrawRect(8.0f, 8.0f, 78.0f, 14.0f, 0x90000000);
-    hudDrawText5x7(12.0f, 11.0f, tpsText, 0xFF80FF80, 1.0f);
-  }
-  if (g_showPSPDebugInfo) {
-    PSPRendererDebugInfo dbg;
-    PSPRenderer_GetDebugInfo(&dbg);
-    int freeMem = sceKernelTotalFreeMemSize();
-    int maxBlock = sceKernelMaxFreeMemSize();
-    int cpu = scePowerGetCpuClockFrequencyInt();
-    int bus = scePowerGetBusClockFrequencyInt();
-
-    char line1[96], line2[96], line3[96], line4[96], line5[96];
-    snprintf(line1, sizeof(line1), "FREE:%dK MAX:%dK", freeMem / 1024, maxBlock / 1024);
-    snprintf(line2, sizeof(line2), "CPU:%d BUS:%d", cpu, bus);
-    snprintf(line3, sizeof(line3), "FB0:%08lX FB1:%08lX", (unsigned long)dbg.fbp0, (unsigned long)dbg.fbp1);
-    snprintf(line4, sizeof(line4), "Z:%08lX DRW:%08lX", (unsigned long)dbg.zbp, (unsigned long)dbg.drawBuffer);
-    snprintf(line5, sizeof(line5), "BUF:%d SCR:%dx%d", dbg.bufWidth, dbg.scrWidth, dbg.scrHeight);
-
-    const float bx = 8.0f;
-    const float by = 232.0f;
-    hudDrawRect(bx, by, 220.0f, 38.0f, 0x90000000);
-    hudDrawText5x7(bx + 4.0f, by + 2.0f, line1, 0xFFFFFFFF, 0.85f);
-    hudDrawText5x7(bx + 4.0f, by + 9.0f, line2, 0xFFFFFFFF, 0.85f);
-    hudDrawText5x7(bx + 4.0f, by + 16.0f, line3, 0xFFC0FFC0, 0.85f);
-    hudDrawText5x7(bx + 4.0f, by + 23.0f, line4, 0xFFC0FFC0, 0.85f);
-    hudDrawText5x7(bx + 4.0f, by + 30.0f, line5, 0xFFC0FFC0, 0.85f);
   }
   sceGuDisable(GU_BLEND);
   sceGuEnable(GU_CULL_FACE);
