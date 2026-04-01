@@ -79,11 +79,18 @@ void Level::tick() {
   if (m_waterDirty) tickWater();
   if (m_lavaDirty) tickLava();
   if (!m_suspendLightingUpdates && !m_lightUpdateQueue.empty()) {
-    // Simpler/stable lighting path: rebuild lighting from authoritative world
-    // state instead of applying many incremental local updates.
-    // This is slower, but avoids hard-to-reproduce propagation bugs/crashes.
-    m_lightUpdateQueue.clear();
-    computeLighting();
+    // Ultra-simple runtime relight budget: process only a few dirty chunks
+    // each tick, avoiding world-wide relight spikes and FPS drops.
+    const int maxChunksPerTick = 2;
+    for (int i = 0; i < maxChunksPerTick && !m_lightUpdateQueue.empty(); ++i) {
+      int idx = m_lightUpdateQueue.front();
+      m_lightUpdateQueue.pop_front();
+      if (idx < 0 || idx >= WORLD_CHUNKS_X * WORLD_CHUNKS_Z) continue;
+      int cx = idx % WORLD_CHUNKS_X;
+      int cz = idx / WORLD_CHUNKS_X;
+      m_lightChunkQueued[idx] = 0;
+      recomputeChunkLighting(cx, cz);
+    }
   }
   if (m_waterWakeTicks > 0) m_waterWakeTicks--;
   if (m_lavaWakeTicks > 0) m_lavaWakeTicks--;
@@ -419,6 +426,7 @@ Level::Level() {
   m_waterDue.resize(m_waterDepth.size(), -1);
   m_lavaDepth.resize(m_waterDepth.size(), 0xFF);
   m_lavaDue.resize(m_waterDepth.size(), -1);
+  m_lightChunkQueued.resize(WORLD_CHUNKS_X * WORLD_CHUNKS_Z, 0);
   for (int cx = 0; cx < WORLD_CHUNKS_X; cx++)
     for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++)
       m_chunks[cx][cz] = new Chunk();
@@ -585,15 +593,13 @@ void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
     }
   }
 
-  if (m_suspendLightingUpdates || m_inWaterSimUpdate) {
-    queueLightUpdate(wx, wy, wz);
-    static const int dx[6] = {-1, 1, 0, 0, 0, 0};
-    static const int dy[6] = {0, 0, -1, 1, 0, 0};
-    static const int dz[6] = {0, 0, 0, 0, -1, 1};
-    for (int i = 0; i < 6; ++i) queueLightUpdate(wx + dx[i], wy + dy[i], wz + dz[i]);
-  } else {
-    updateLight(wx, wy, wz);
-  }
+  // Always schedule a batched lighting rebuild. This replaces incremental
+  // updateLight/updateSkyLight/updateBlockLight chains with a stable model.
+  queueLightUpdate(wx, wy, wz);
+  static const int dx[6] = {-1, 1, 0, 0, 0, 0};
+  static const int dy[6] = {0, 0, -1, 1, 0, 0};
+  static const int dz[6] = {0, 0, 0, 0, -1, 1};
+  for (int i = 0; i < 6; ++i) queueLightUpdate(wx + dx[i], wy + dy[i], wz + dz[i]);
 }
 
 std::vector<AABB> Level::getCubes(const AABB& box) const {
@@ -773,6 +779,8 @@ bool Level::loadFromFile(const char *path) {
   }
   m_waterDirty = !m_waterTicks.empty();
   m_lavaDirty = !m_lavaTicks.empty();
+  m_lightUpdateQueue.clear();
+  std::fill(m_lightChunkQueued.begin(), m_lightChunkQueued.end(), 0);
   return true;
 }
 
@@ -780,6 +788,7 @@ void Level::generate(Random *rng) {
   int64_t seed = rng->nextLong();
   m_suspendLightingUpdates = true;
   m_lightUpdateQueue.clear();
+  std::fill(m_lightChunkQueued.begin(), m_lightChunkQueued.end(), 0);
 
   for (int cx = 0; cx < WORLD_CHUNKS_X; cx++) {
     for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++) {
@@ -1049,6 +1058,7 @@ void Level::generate(Random *rng) {
   m_suspendLightingUpdates = false;
   m_lightUpdateQueue.clear();
   computeLighting();
+  std::fill(m_lightChunkQueued.begin(), m_lightChunkQueued.end(), 0);
 }
 
 void Level::queueLightUpdate(int wx, int wy, int wz) {
@@ -1056,7 +1066,85 @@ void Level::queueLightUpdate(int wx, int wy, int wz) {
   int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
   int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
   if (wx >= maxX || wz >= maxZ) return;
-  m_lightUpdateQueue.push_back(waterIndex(wx, wy, wz));
+  (void)wy;
+  enqueueLightChunk(wx >> 4, wz >> 4);
+}
+
+void Level::enqueueLightChunk(int cx, int cz) {
+  if (cx < 0 || cx >= WORLD_CHUNKS_X || cz < 0 || cz >= WORLD_CHUNKS_Z) return;
+  int idx = cz * WORLD_CHUNKS_X + cx;
+  if (m_lightChunkQueued[idx]) return;
+  m_lightChunkQueued[idx] = 1;
+  m_lightUpdateQueue.push_back(idx);
+}
+
+void Level::recomputeChunkLighting(int cx, int cz) {
+  if (cx < 0 || cx >= WORLD_CHUNKS_X || cz < 0 || cz >= WORLD_CHUNKS_Z) return;
+  const int baseX = cx * CHUNK_SIZE_X;
+  const int baseZ = cz * CHUNK_SIZE_Z;
+  const int maxX = WORLD_CHUNKS_X * CHUNK_SIZE_X;
+  const int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
+
+  // 1) Cheap skylight: vertical pass only for this chunk.
+  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+      int wx = baseX + lx;
+      int wz = baseZ + lz;
+      int cur = 15;
+      for (int y = CHUNK_SIZE_Y - 1; y >= 0; --y) {
+        uint8_t id = getBlock(wx, y, wz);
+        if (id != BLOCK_AIR) {
+          const BlockProps &bp = g_blockProps[id];
+          if (bp.isOpaque()) cur = 0;
+          else cur = std::max(0, cur - getLightAttenuation(id));
+        }
+        setSkyLight(wx, y, wz, (uint8_t)cur);
+      }
+    }
+  }
+
+  // 2) Reset block light in chunk and seed local emissive blocks.
+  std::vector<LightNode> lightQ;
+  lightQ.reserve(2048);
+  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+      for (int y = 0; y < CHUNK_SIZE_Y; ++y) {
+        int wx = baseX + lx;
+        int wz = baseZ + lz;
+        uint8_t id = getBlock(wx, y, wz);
+        uint8_t emit = g_blockProps[id].light_emit;
+        setBlockLight(wx, y, wz, emit);
+        if (emit > 1) lightQ.push_back({wx, y, wz});
+      }
+    }
+  }
+
+  // 3) Local blocklight flood fill constrained to this chunk.
+  int head = 0;
+  static const int dx[] = {-1, 1, 0, 0, 0, 0};
+  static const int dy[] = {0, 0, -1, 1, 0, 0};
+  static const int dz[] = {0, 0, 0, 0, -1, 1};
+  while (head < (int)lightQ.size()) {
+    LightNode n = lightQ[head++];
+    uint8_t lv = getBlockLight(n.x, n.y, n.z);
+    if (lv <= 1) continue;
+    for (int i = 0; i < 6; ++i) {
+      int nx = n.x + dx[i], ny = n.y + dy[i], nz = n.z + dz[i];
+      if (ny < 0 || ny >= CHUNK_SIZE_Y || nx < baseX || nx >= baseX + CHUNK_SIZE_X ||
+          nz < baseZ || nz >= baseZ + CHUNK_SIZE_Z) {
+        continue;
+      }
+      if (nx < 0 || nz < 0 || nx >= maxX || nz >= maxZ) continue;
+      uint8_t nid = getBlock(nx, ny, nz);
+      if (g_blockProps[nid].isOpaque()) continue;
+      int propagated = (int)lv - getLightAttenuation(nid);
+      if (propagated <= 0) continue;
+      if (propagated > getBlockLight(nx, ny, nz)) {
+        setBlockLight(nx, ny, nz, (uint8_t)propagated);
+        lightQ.push_back({nx, ny, nz});
+      }
+    }
+  }
 }
 
 void Level::computeLighting() {
