@@ -19,6 +19,9 @@ SRCS = src/main.cpp \
        src/world/AABB.cpp \
        src/world/Blocks.cpp \
        src/world/NoiseGen.cpp \
+       src/world/Synth.cpp \
+       src/world/ImprovedNoise.cpp \
+       src/world/PerlinNoise.cpp \
        src/world/TreeFeature.cpp \
        src/world/WorldGen.cpp \
        src/world/Chunk.cpp \

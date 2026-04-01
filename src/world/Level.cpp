@@ -1,4 +1,5 @@
 #include "Level.h"
+#include "NoiseGen.h"
 #include "Random.h"
 #include "WorldGen.h"
 #include "TreeFeature.h"
@@ -8,10 +9,55 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <math.h>
 
 struct LightNode {
   int x, y, z;
 };
+
+static void placeOreVeinInLevel(Level *level, Random &rng, int wx, int wy, int wz,
+                                uint8_t oreId, int veinSize) {
+  float angle = rng.nextFloat() * 3.14159265f;
+  float dx = sinf(angle) * (veinSize / 8.0f);
+  float dz = cosf(angle) * (veinSize / 8.0f);
+  float x0 = wx + 8 + dx;
+  float x1 = wx + 8 - dx;
+  float z0 = wz + 8 + dz;
+  float z1 = wz + 8 - dz;
+  float y0 = wy + rng.nextInt(3) - 2;
+  float y1 = wy + rng.nextInt(3) - 2;
+
+  for (int i = 0; i < veinSize; ++i) {
+    float t = (float)i / (float)veinSize;
+    float px = x0 + (x1 - x0) * t;
+    float py = y0 + (y1 - y0) * t;
+    float pz = z0 + (z1 - z0) * t;
+    float radius =
+        (sinf(t * 3.14159265f) + 1.0f) * rng.nextFloat() * veinSize / 32.0f +
+        1.0f;
+    int minX = (int)floorf(px - radius);
+    int maxX = (int)floorf(px + radius);
+    int minY = (int)floorf(py - radius);
+    int maxY = (int)floorf(py + radius);
+    int minZ = (int)floorf(pz - radius);
+    int maxZ = (int)floorf(pz + radius);
+
+    for (int x = minX; x <= maxX; ++x) {
+      float nx = ((float)x + 0.5f - px) / radius;
+      if (nx * nx >= 1.0f) continue;
+      for (int y = minY; y <= maxY; ++y) {
+        float ny = ((float)y + 0.5f - py) / radius;
+        if (nx * nx + ny * ny >= 1.0f) continue;
+        for (int z = minZ; z <= maxZ; ++z) {
+          float nz = ((float)z + 0.5f - pz) / radius;
+          if (nx * nx + ny * ny + nz * nz >= 1.0f) continue;
+          if (level->getBlock(x, y, z) == BLOCK_STONE)
+            level->setBlock(x, y, z, oreId);
+        }
+      }
+    }
+  }
+}
 
 bool Level::isWaterBlock(uint8_t id) const {
   return id == BLOCK_WATER_STILL || id == BLOCK_WATER_FLOW;
@@ -754,21 +800,233 @@ void Level::generate(Random *rng) {
     }
   }
 
+  Random featureRng(seed);
+  int xScale = featureRng.nextInt() / 2 * 2 + 1;
+  int zScale = featureRng.nextInt() / 2 * 2 + 1;
+
   for (int cx = 0; cx < WORLD_CHUNKS_X; cx++) {
     for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++) {
-      Random chunkRng(seed ^ ((int64_t)cx * 341873128712LL) ^ ((int64_t)cz * 132897987541LL));
-      for (int i = 0; i < 3; i++) {
-        int lx = chunkRng.nextInt(CHUNK_SIZE_X);
-        int lz = chunkRng.nextInt(CHUNK_SIZE_Z);
-        int wx = cx * CHUNK_SIZE_X + lx;
-        int wz = cz * CHUNK_SIZE_Z + lz;
+      int xo = cx * CHUNK_SIZE_X;
+      int zo = cz * CHUNK_SIZE_Z;
+      featureRng.setSeed(((cx * xScale) + (cz * zScale)) ^ seed);
+
+      for (int i = 0; i < 10; ++i) {
+        int x = xo + featureRng.nextInt(16);
+        int y = featureRng.nextInt(128);
+        int z = zo + featureRng.nextInt(16);
+        placeOreVeinInLevel(this, featureRng, x, y, z, BLOCK_CLAY, 32);
+      }
+      for (int i = 0; i < 20; ++i) {
+        int x = xo + featureRng.nextInt(16);
+        int y = featureRng.nextInt(128);
+        int z = zo + featureRng.nextInt(16);
+        placeOreVeinInLevel(this, featureRng, x, y, z, BLOCK_DIRT, 32);
+      }
+      for (int i = 0; i < 10; ++i) {
+        int x = xo + featureRng.nextInt(16);
+        int y = featureRng.nextInt(128);
+        int z = zo + featureRng.nextInt(16);
+        placeOreVeinInLevel(this, featureRng, x, y, z, BLOCK_GRAVEL, 32);
+      }
+      for (int i = 0; i < 16; ++i) {
+        int x = xo + featureRng.nextInt(16);
+        int y = featureRng.nextInt(128);
+        int z = zo + featureRng.nextInt(16);
+        placeOreVeinInLevel(this, featureRng, x, y, z, BLOCK_COAL_ORE, 14);
+      }
+      for (int i = 0; i < 14; ++i) {
+        int x = xo + featureRng.nextInt(16);
+        int y = featureRng.nextInt(64);
+        int z = zo + featureRng.nextInt(16);
+        placeOreVeinInLevel(this, featureRng, x, y, z, BLOCK_IRON_ORE, 10);
+      }
+      for (int i = 0; i < 2; ++i) {
+        int x = xo + featureRng.nextInt(16);
+        int y = featureRng.nextInt(32);
+        int z = zo + featureRng.nextInt(16);
+        placeOreVeinInLevel(this, featureRng, x, y, z, BLOCK_GOLD_ORE, 9);
+      }
+      for (int i = 0; i < 6; ++i) {
+        int x = xo + featureRng.nextInt(16);
+        int y = featureRng.nextInt(16);
+        int z = zo + featureRng.nextInt(16);
+        placeOreVeinInLevel(this, featureRng, x, y, z, BLOCK_REDSTONE_ORE, 8);
+      }
+      for (int i = 0; i < 3; ++i) {
+        int x = xo + featureRng.nextInt(16);
+        int y = featureRng.nextInt(16);
+        int z = zo + featureRng.nextInt(16);
+        placeOreVeinInLevel(this, featureRng, x, y, z, BLOCK_EMERALD_ORE, 6);
+      }
+      for (int i = 0; i < 1; ++i) {
+        int x = xo + featureRng.nextInt(16);
+        int y = featureRng.nextInt(16) + featureRng.nextInt(16);
+        int z = zo + featureRng.nextInt(16);
+        placeOreVeinInLevel(this, featureRng, x, y, z, BLOCK_LAPIS_ORE, 6);
+      }
+
+      int biome = WorldGen::getBiomeId(xo + 16, zo + 16, seed);
+      float forestNoise = NoiseGen::octaveNoise(xo * 0.5f, zo * 0.5f,
+                                                seed ^ 0x4A9C31D2LL, 8, 0.5f) *
+                          2.0f - 1.0f;
+      int oFor =
+          (int)((forestNoise / 8.0f + featureRng.nextFloat() * 4.0f + 4.0f) /
+                3.0f);
+      int trees = 0;
+      if (featureRng.nextInt(10) == 0) trees += 1;
+
+      if (biome == WorldGen::BIOME_FOREST ||
+          biome == WorldGen::BIOME_RAINFOREST)
+        trees += oFor + 2;
+      if (biome == WorldGen::BIOME_SEASONAL_FOREST) trees += oFor + 1;
+      if (biome == WorldGen::BIOME_TAIGA) trees += oFor + 1;
+      if (biome == WorldGen::BIOME_DESERT || biome == WorldGen::BIOME_TUNDRA ||
+          biome == WorldGen::BIOME_PLAINS)
+        trees -= 20;
+      if (trees < 0) trees = 0;
+
+      for (int i = 0; i < trees; i++) {
+        int wx = xo + featureRng.nextInt(16) + 8;
+        int wz = zo + featureRng.nextInt(16) + 8;
 
         int wy = CHUNK_SIZE_Y - 1;
         while (wy > 0 && getBlock(wx, wy, wz) == BLOCK_AIR) wy--;
 
-        if (wy > 50 && getBlock(wx, wy, wz) == BLOCK_GRASS) {
+        if (wy > 0 && getBlock(wx, wy, wz) == BLOCK_GRASS) {
           setBlock(wx, wy, wz, BLOCK_DIRT);
-          TreeFeature::place(this, wx, wy + 1, wz, chunkRng);
+          TreeFeature::place(this, wx, wy + 1, wz, featureRng);
+        }
+      }
+
+      auto tryPlaceSimplePlant = [&](uint8_t plantId, int spreadPasses) {
+        int x = xo + featureRng.nextInt(16) + 8;
+        int y = featureRng.nextInt(CHUNK_SIZE_Y);
+        int z = zo + featureRng.nextInt(16) + 8;
+        for (int j = 0; j < spreadPasses; ++j) {
+          int px = x + featureRng.nextInt(8) - featureRng.nextInt(8);
+          int py = y + featureRng.nextInt(4) - featureRng.nextInt(4);
+          int pz = z + featureRng.nextInt(8) - featureRng.nextInt(8);
+          if (px < 0 || pz < 0 || py <= 0) continue;
+          if (px >= WORLD_CHUNKS_X * CHUNK_SIZE_X ||
+              pz >= WORLD_CHUNKS_Z * CHUNK_SIZE_Z || py >= CHUNK_SIZE_Y)
+            continue;
+          if (getBlock(px, py, pz) != BLOCK_AIR) continue;
+          uint8_t below = getBlock(px, py - 1, pz);
+          if (below == BLOCK_GRASS || below == BLOCK_DIRT) {
+            setBlock(px, py, pz, plantId);
+          }
+        }
+      };
+
+      for (int i = 0; i < 2; ++i) tryPlaceSimplePlant(BLOCK_FLOWER, 64);
+      if (featureRng.nextInt(2) == 0) tryPlaceSimplePlant(BLOCK_ROSE, 64);
+      if (featureRng.nextInt(4) == 0)
+        tryPlaceSimplePlant(BLOCK_MUSHROOM_BROWN, 64);
+      if (featureRng.nextInt(8) == 0) tryPlaceSimplePlant(BLOCK_MUSHROOM_RED, 64);
+
+      for (int i = 0; i < 10; ++i) {
+        int x = xo + featureRng.nextInt(16) + 8;
+        int y = featureRng.nextInt(CHUNK_SIZE_Y);
+        int z = zo + featureRng.nextInt(16) + 8;
+        for (int j = 0; j < 20; ++j) {
+          int px = x + featureRng.nextInt(4) - featureRng.nextInt(4);
+          int py = y + featureRng.nextInt(4) - featureRng.nextInt(4);
+          int pz = z + featureRng.nextInt(4) - featureRng.nextInt(4);
+          if (px < 0 || pz < 0 || py <= 0) continue;
+          if (px >= WORLD_CHUNKS_X * CHUNK_SIZE_X ||
+              pz >= WORLD_CHUNKS_Z * CHUNK_SIZE_Z || py >= CHUNK_SIZE_Y)
+            continue;
+          if (getBlock(px, py, pz) != BLOCK_AIR) continue;
+          uint8_t below = getBlock(px, py - 1, pz);
+          if (below != BLOCK_GRASS && below != BLOCK_DIRT && below != BLOCK_SAND)
+            continue;
+          bool nearWater =
+              isWaterBlock(getBlock(px + 1, py - 1, pz)) ||
+              isWaterBlock(getBlock(px - 1, py - 1, pz)) ||
+              isWaterBlock(getBlock(px, py - 1, pz + 1)) ||
+              isWaterBlock(getBlock(px, py - 1, pz - 1));
+          if (nearWater) setBlock(px, py, pz, BLOCK_REEDS);
+        }
+      }
+
+      int cacti = 0;
+      if (biome == WorldGen::BIOME_DESERT) cacti += 5;
+      for (int i = 0; i < cacti; ++i) {
+        int x = xo + featureRng.nextInt(16) + 8;
+        int z = zo + featureRng.nextInt(16) + 8;
+        int y = featureRng.nextInt(CHUNK_SIZE_Y);
+        if (getBlock(x, y, z) != BLOCK_AIR) continue;
+        if (getBlock(x, y - 1, z) != BLOCK_SAND) continue;
+        int h = 1 + featureRng.nextInt(3);
+        bool can = true;
+        for (int hh = 0; hh < h; ++hh) {
+          if (getBlock(x, y + hh, z) != BLOCK_AIR) {
+            can = false;
+            break;
+          }
+        }
+        if (!can) continue;
+        for (int hh = 0; hh < h; ++hh) setBlock(x, y + hh, z, BLOCK_CACTUS);
+      }
+
+      auto tryPlaceSpring = [&](uint8_t springId, int x, int y, int z) {
+        if (x <= 0 || z <= 0 || y <= 1) return;
+        if (x >= WORLD_CHUNKS_X * CHUNK_SIZE_X - 1 ||
+            z >= WORLD_CHUNKS_Z * CHUNK_SIZE_Z - 1 || y >= CHUNK_SIZE_Y - 1)
+          return;
+        if (getBlock(x, y, z) != BLOCK_STONE) return;
+        if (getBlock(x, y + 1, z) != BLOCK_STONE) return;
+        if (getBlock(x, y - 1, z) != BLOCK_STONE) return;
+
+        int stoneSides = 0;
+        int airSides = 0;
+        const int dx4[4] = {-1, 1, 0, 0};
+        const int dz4[4] = {0, 0, -1, 1};
+        for (int s = 0; s < 4; ++s) {
+          uint8_t b = getBlock(x + dx4[s], y, z + dz4[s]);
+          if (b == BLOCK_STONE) stoneSides++;
+          if (b == BLOCK_AIR) airSides++;
+        }
+        if (stoneSides == 3 && airSides == 1) setBlock(x, y, z, springId);
+      };
+
+      for (int i = 0; i < 50; ++i) {
+        int x = xo + featureRng.nextInt(16) + 8;
+        int y = featureRng.nextInt(featureRng.nextInt(120) + 8);
+        int z = zo + featureRng.nextInt(16) + 8;
+        tryPlaceSpring(BLOCK_WATER_FLOW, x, y, z);
+      }
+      for (int i = 0; i < 20; ++i) {
+        int x = xo + featureRng.nextInt(16) + 8;
+        int y = featureRng.nextInt(featureRng.nextInt(featureRng.nextInt(112) + 8) + 8);
+        int z = zo + featureRng.nextInt(16) + 8;
+        tryPlaceSpring(BLOCK_LAVA_FLOW, x, y, z);
+      }
+
+      const float SNOW_CUTOFF = 0.5f;
+      const float SNOW_SCALE = 0.3f;
+      for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+        for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+          int wx = xo + lx;
+          int wz = zo + lz;
+          int wy = CHUNK_SIZE_Y - 1;
+          while (wy > 0 && getBlock(wx, wy, wz) == BLOCK_AIR) wy--;
+          if (wy <= 0 || wy >= CHUNK_SIZE_Y - 1) continue;
+
+          float temp = WorldGen::getTemperature(wx, wz, seed) -
+                       ((wy - 64) / 64.0f) * SNOW_SCALE;
+          if (temp >= SNOW_CUTOFF) continue;
+
+          uint8_t top = getBlock(wx, wy, wz);
+          uint8_t above = getBlock(wx, wy + 1, wz);
+          if (above != BLOCK_AIR) continue;
+          if (top == BLOCK_WATER_STILL || top == BLOCK_WATER_FLOW) {
+            setBlock(wx, wy, wz, BLOCK_ICE);
+          } else if (top == BLOCK_GRASS || top == BLOCK_DIRT ||
+                     top == BLOCK_SAND || top == BLOCK_GRAVEL ||
+                     top == BLOCK_STONE) {
+            setBlock(wx, wy + 1, wz, BLOCK_SNOW);
+          }
         }
       }
     }
