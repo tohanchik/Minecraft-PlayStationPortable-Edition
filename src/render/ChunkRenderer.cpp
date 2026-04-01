@@ -323,6 +323,9 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
   }
 
   // Draw emissive chunks
+  // Keep alpha test enabled so cutout textures (e.g. leaves/glass in emit-pass)
+  // don't render their transparent texels as dark quads.
+  sceGuEnable(GU_ALPHA_TEST);
   sceGuAmbient(0xFFFFFFFF);
   for (int i = 0; i < visibleCount; i++) {
     Chunk *c = visibleChunks[i].chunk;
