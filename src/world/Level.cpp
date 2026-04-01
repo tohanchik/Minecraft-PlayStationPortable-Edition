@@ -78,12 +78,15 @@ void Level::tick() {
   m_time += 1;
   if (m_waterDirty) tickWater();
   if (m_lavaDirty) tickLava();
-  if (!m_suspendLightingUpdates && !m_lightUpdateQueue.empty()) {
-    // Simpler/stable lighting path: rebuild lighting from authoritative world
-    // state instead of applying many incremental local updates.
-    // This is slower, but avoids hard-to-reproduce propagation bugs/crashes.
+  if (!m_suspendLightingUpdates && m_lightingDirty &&
+      m_time >= m_nextLightingRebuildTick) {
+    // Simple/stable lighting model:
+    // - no fragile incremental propagation on block updates
+    // - full authoritative rebuild in bounded batches (debounced by tick)
+    // This is intentionally conservative to avoid crash-prone light state.
     m_lightUpdateQueue.clear();
     computeLighting();
+    m_lightingDirty = false;
   }
   if (m_waterWakeTicks > 0) m_waterWakeTicks--;
   if (m_lavaWakeTicks > 0) m_lavaWakeTicks--;
@@ -585,15 +588,13 @@ void Level::setBlock(int wx, int wy, int wz, uint8_t id) {
     }
   }
 
-  if (m_suspendLightingUpdates || m_inWaterSimUpdate) {
-    queueLightUpdate(wx, wy, wz);
-    static const int dx[6] = {-1, 1, 0, 0, 0, 0};
-    static const int dy[6] = {0, 0, -1, 1, 0, 0};
-    static const int dz[6] = {0, 0, 0, 0, -1, 1};
-    for (int i = 0; i < 6; ++i) queueLightUpdate(wx + dx[i], wy + dy[i], wz + dz[i]);
-  } else {
-    updateLight(wx, wy, wz);
-  }
+  // Always schedule a batched lighting rebuild. This replaces incremental
+  // updateLight/updateSkyLight/updateBlockLight chains with a stable model.
+  queueLightUpdate(wx, wy, wz);
+  static const int dx[6] = {-1, 1, 0, 0, 0, 0};
+  static const int dy[6] = {0, 0, -1, 1, 0, 0};
+  static const int dz[6] = {0, 0, 0, 0, -1, 1};
+  for (int i = 0; i < 6; ++i) queueLightUpdate(wx + dx[i], wy + dy[i], wz + dz[i]);
 }
 
 std::vector<AABB> Level::getCubes(const AABB& box) const {
@@ -773,6 +774,9 @@ bool Level::loadFromFile(const char *path) {
   }
   m_waterDirty = !m_waterTicks.empty();
   m_lavaDirty = !m_lavaTicks.empty();
+  m_lightUpdateQueue.clear();
+  m_lightingDirty = false;
+  m_nextLightingRebuildTick = m_time + 1;
   return true;
 }
 
@@ -780,6 +784,7 @@ void Level::generate(Random *rng) {
   int64_t seed = rng->nextLong();
   m_suspendLightingUpdates = true;
   m_lightUpdateQueue.clear();
+  m_lightingDirty = true;
 
   for (int cx = 0; cx < WORLD_CHUNKS_X; cx++) {
     for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++) {
@@ -1049,6 +1054,8 @@ void Level::generate(Random *rng) {
   m_suspendLightingUpdates = false;
   m_lightUpdateQueue.clear();
   computeLighting();
+  m_lightingDirty = false;
+  m_nextLightingRebuildTick = m_time + 1;
 }
 
 void Level::queueLightUpdate(int wx, int wy, int wz) {
@@ -1057,6 +1064,9 @@ void Level::queueLightUpdate(int wx, int wy, int wz) {
   int maxZ = WORLD_CHUNKS_Z * CHUNK_SIZE_Z;
   if (wx >= maxX || wz >= maxZ) return;
   m_lightUpdateQueue.push_back(waterIndex(wx, wy, wz));
+  m_lightingDirty = true;
+  // Debounce expensive full rebuild while many blocks are mutating in a row.
+  if (m_nextLightingRebuildTick < m_time + 1) m_nextLightingRebuildTick = m_time + 1;
 }
 
 void Level::computeLighting() {
