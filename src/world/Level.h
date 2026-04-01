@@ -4,6 +4,7 @@
 #include <math.h>
 #include <vector>
 #include <queue>
+#include <deque>
 #include <functional>
 
 class Random;
@@ -96,6 +97,9 @@ private:
   void scheduleLavaTick(int wx, int wy, int wz, int delayTicks);
   void wakeLavaNeighborhood(int wx, int wy, int wz, int delayTicks);
   void processLavaCell(int wx, int wy, int wz);
+  void recomputeBlockLightingFromSources();
+  int getLightAttenuation(uint8_t blockId) const;
+  void queueLightUpdate(int wx, int wy, int wz);
 
   Chunk *m_chunks[WORLD_CHUNKS_X][WORLD_CHUNKS_Z];
   std::vector<uint8_t> m_waterDepth;
@@ -124,4 +128,6 @@ private:
   int m_lavaWakeRadius = 8;
   int m_lavaWakeTicks = 0;
   bool m_inWaterSimUpdate = false;
+  bool m_suspendLightingUpdates = false;
+  std::deque<int> m_lightUpdateQueue;
 };
