@@ -9,6 +9,7 @@
 #include <pspkernel.h>
 #include <string.h>
 #include <math.h>
+#include <stdint.h>
 
 #define BUF_WIDTH 512
 #define SCR_WIDTH 480
@@ -26,6 +27,10 @@ static void *g_drawBuffer; // currently configured GU draw buffer
 // VRAM offset calculation
 static void *vrelptr(unsigned int offset) {
   return (void *)(0x44000000 + offset);
+}
+
+static inline void *vramOffsetFromPtr(void *ptr) {
+  return (void *)((uintptr_t)ptr - (uintptr_t)0x44000000);
 }
 
 bool PSPRenderer_Init() {
@@ -88,6 +93,11 @@ bool PSPRenderer_Init() {
 
 void PSPRenderer_BeginFrame(uint32_t skyColor) {
   sceGuStart(GU_DIRECT, g_list);
+
+  // Re-bind draw target every frame.
+  // On real PSP this avoids occasional front/back buffer desync artifacts
+  // after dialog/buffer transitions, which can look like frame flicker/ghosting.
+  sceGuDrawBufferList(GU_PSM_8888, vramOffsetFromPtr(g_drawBuffer), BUF_WIDTH);
 
   // Clear to sky color
   sceGuClearColor(skyColor);

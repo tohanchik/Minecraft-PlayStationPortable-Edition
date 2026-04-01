@@ -13,7 +13,7 @@ static const uint8_t kInventoryItems[] = {
   BLOCK_BRICK, BLOCK_BOOKSHELF, BLOCK_MOSSY_COBBLE, BLOCK_OBSIDIAN,
   BLOCK_NETHERRACK, BLOCK_SOULSAND, BLOCK_GLOWSTONE,
   // Ores
-  BLOCK_COAL_ORE, BLOCK_IRON_ORE, BLOCK_GOLD_ORE, BLOCK_DIAMOND_ORE, BLOCK_REDSTONE_ORE, BLOCK_LAPIS_ORE,
+  BLOCK_COAL_ORE, BLOCK_IRON_ORE, BLOCK_GOLD_ORE, BLOCK_DIAMOND_ORE, BLOCK_REDSTONE_ORE, BLOCK_LAPIS_ORE, BLOCK_EMERALD_ORE,
   // Plants
   BLOCK_SAPLING, BLOCK_TALLGRASS, BLOCK_FLOWER, BLOCK_ROSE,
   // Liquids
@@ -29,13 +29,13 @@ static const uint8_t kInventoryItems[] = {
 struct CatRange { int start; int end; const char *name; };
 static const CatRange kCatRanges[] = {
   {0, 33, "Blocks"},
-  {34, 39, "Ores"},
-  {40, 43, "Plants"},
-  {44, 45, "Liquids"},
-  {46, 48, "Minerals"},
-  {49, 52, "Utility"},
-  {53, 58, "Nature"},
-  {0, 58, "All"}
+  {34, 40, "Ores"},
+  {41, 44, "Plants"},
+  {45, 46, "Liquids"},
+  {47, 49, "Minerals"},
+  {50, 53, "Utility"},
+  {54, 59, "Nature"},
+  {0, 59, "All"}
 };
 
 CreativeInventory::CreativeInventory()
