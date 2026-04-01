@@ -1,4 +1,5 @@
 #include "Level.h"
+#include "NoiseGen.h"
 #include "Random.h"
 #include "WorldGen.h"
 #include "TreeFeature.h"
@@ -754,21 +755,119 @@ void Level::generate(Random *rng) {
     }
   }
 
+  Random featureRng(seed);
+  int xScale = featureRng.nextInt() / 2 * 2 + 1;
+  int zScale = featureRng.nextInt() / 2 * 2 + 1;
+
   for (int cx = 0; cx < WORLD_CHUNKS_X; cx++) {
     for (int cz = 0; cz < WORLD_CHUNKS_Z; cz++) {
-      Random chunkRng(seed ^ ((int64_t)cx * 341873128712LL) ^ ((int64_t)cz * 132897987541LL));
-      for (int i = 0; i < 3; i++) {
-        int lx = chunkRng.nextInt(CHUNK_SIZE_X);
-        int lz = chunkRng.nextInt(CHUNK_SIZE_Z);
-        int wx = cx * CHUNK_SIZE_X + lx;
-        int wz = cz * CHUNK_SIZE_Z + lz;
+      int xo = cx * CHUNK_SIZE_X;
+      int zo = cz * CHUNK_SIZE_Z;
+      featureRng.setSeed(((cx * xScale) + (cz * zScale)) ^ seed);
+
+      int biome = WorldGen::getBiomeId(xo + 16, zo + 16, seed);
+      float forestNoise = NoiseGen::octaveNoise(xo * 0.5f, zo * 0.5f,
+                                                seed ^ 0x4A9C31D2LL, 8, 0.5f) *
+                          2.0f - 1.0f;
+      int oFor =
+          (int)((forestNoise / 8.0f + featureRng.nextFloat() * 4.0f + 4.0f) /
+                3.0f);
+      int trees = 0;
+      if (featureRng.nextInt(10) == 0) trees += 1;
+
+      if (biome == WorldGen::BIOME_FOREST) trees += oFor + 2;
+      if (biome == WorldGen::BIOME_TAIGA) trees += oFor + 1;
+      if (biome == WorldGen::BIOME_DESERT || biome == WorldGen::BIOME_TUNDRA ||
+          biome == WorldGen::BIOME_PLAINS)
+        trees -= 20;
+      if (trees < 0) trees = 0;
+
+      for (int i = 0; i < trees; i++) {
+        int wx = xo + featureRng.nextInt(16) + 8;
+        int wz = zo + featureRng.nextInt(16) + 8;
 
         int wy = CHUNK_SIZE_Y - 1;
         while (wy > 0 && getBlock(wx, wy, wz) == BLOCK_AIR) wy--;
 
-        if (wy > 50 && getBlock(wx, wy, wz) == BLOCK_GRASS) {
+        if (wy > 0 && getBlock(wx, wy, wz) == BLOCK_GRASS) {
           setBlock(wx, wy, wz, BLOCK_DIRT);
-          TreeFeature::place(this, wx, wy + 1, wz, chunkRng);
+          TreeFeature::place(this, wx, wy + 1, wz, featureRng);
+        }
+      }
+
+      auto tryPlaceSimplePlant = [&](uint8_t plantId, int spreadPasses) {
+        int x = xo + featureRng.nextInt(16) + 8;
+        int y = featureRng.nextInt(CHUNK_SIZE_Y);
+        int z = zo + featureRng.nextInt(16) + 8;
+        for (int j = 0; j < spreadPasses; ++j) {
+          int px = x + featureRng.nextInt(8) - featureRng.nextInt(8);
+          int py = y + featureRng.nextInt(4) - featureRng.nextInt(4);
+          int pz = z + featureRng.nextInt(8) - featureRng.nextInt(8);
+          if (px < 0 || pz < 0 || py <= 0) continue;
+          if (px >= WORLD_CHUNKS_X * CHUNK_SIZE_X ||
+              pz >= WORLD_CHUNKS_Z * CHUNK_SIZE_Z || py >= CHUNK_SIZE_Y)
+            continue;
+          if (getBlock(px, py, pz) != BLOCK_AIR) continue;
+          uint8_t below = getBlock(px, py - 1, pz);
+          if (below == BLOCK_GRASS || below == BLOCK_DIRT) {
+            setBlock(px, py, pz, plantId);
+          }
+        }
+      };
+
+      for (int i = 0; i < 2; ++i) tryPlaceSimplePlant(BLOCK_FLOWER, 64);
+      if (featureRng.nextInt(2) == 0) tryPlaceSimplePlant(BLOCK_ROSE, 64);
+      if (featureRng.nextInt(4) == 0)
+        tryPlaceSimplePlant(BLOCK_MUSHROOM_BROWN, 64);
+      if (featureRng.nextInt(8) == 0) tryPlaceSimplePlant(BLOCK_MUSHROOM_RED, 64);
+
+      for (int i = 0; i < 10; ++i) {
+        int x = xo + featureRng.nextInt(16) + 8;
+        int y = featureRng.nextInt(CHUNK_SIZE_Y);
+        int z = zo + featureRng.nextInt(16) + 8;
+        for (int j = 0; j < 20; ++j) {
+          int px = x + featureRng.nextInt(4) - featureRng.nextInt(4);
+          int py = y + featureRng.nextInt(4) - featureRng.nextInt(4);
+          int pz = z + featureRng.nextInt(4) - featureRng.nextInt(4);
+          if (px < 0 || pz < 0 || py <= 0) continue;
+          if (px >= WORLD_CHUNKS_X * CHUNK_SIZE_X ||
+              pz >= WORLD_CHUNKS_Z * CHUNK_SIZE_Z || py >= CHUNK_SIZE_Y)
+            continue;
+          if (getBlock(px, py, pz) != BLOCK_AIR) continue;
+          uint8_t below = getBlock(px, py - 1, pz);
+          if (below != BLOCK_GRASS && below != BLOCK_DIRT && below != BLOCK_SAND)
+            continue;
+          bool nearWater =
+              isWaterBlock(getBlock(px + 1, py - 1, pz)) ||
+              isWaterBlock(getBlock(px - 1, py - 1, pz)) ||
+              isWaterBlock(getBlock(px, py - 1, pz + 1)) ||
+              isWaterBlock(getBlock(px, py - 1, pz - 1));
+          if (nearWater) setBlock(px, py, pz, BLOCK_REEDS);
+        }
+      }
+
+      bool coldBiome =
+          (biome == WorldGen::BIOME_TUNDRA || biome == WorldGen::BIOME_TAIGA);
+      if (coldBiome) {
+        for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+          for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+            int wx = xo + lx;
+            int wz = zo + lz;
+            int wy = CHUNK_SIZE_Y - 1;
+            while (wy > 0 && getBlock(wx, wy, wz) == BLOCK_AIR) wy--;
+            if (wy <= 0 || wy >= CHUNK_SIZE_Y - 1) continue;
+
+            uint8_t top = getBlock(wx, wy, wz);
+            uint8_t above = getBlock(wx, wy + 1, wz);
+            if (above != BLOCK_AIR) continue;
+            if (top == BLOCK_WATER_STILL || top == BLOCK_WATER_FLOW) {
+              setBlock(wx, wy, wz, BLOCK_ICE);
+            } else if (top == BLOCK_GRASS || top == BLOCK_DIRT ||
+                       top == BLOCK_SAND || top == BLOCK_GRAVEL ||
+                       top == BLOCK_STONE) {
+              setBlock(wx, wy + 1, wz, BLOCK_SNOW);
+            }
+          }
         }
       }
     }
