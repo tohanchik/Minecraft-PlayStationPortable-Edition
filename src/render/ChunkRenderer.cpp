@@ -20,6 +20,11 @@ static CraftPSPVertex g_emitBuf[SUBCHUNK_COUNT][MAX_VERTS_PER_SUB_CHUNK];
 static bool uploadMeshSafe(CraftPSPVertex *&dst, int &dstCount, int &dstCap,
                            int newCount, int growPad, CraftPSPVertex *src) {
   if (newCount <= 0) {
+    if (dst) {
+      free(dst);
+      dst = nullptr;
+    }
+    dstCap = 0;
     dstCount = 0;
     return true;
   }
@@ -29,7 +34,43 @@ static bool uploadMeshSafe(CraftPSPVertex *&dst, int &dstCount, int &dstCap,
   if (newCount > targetCap) {
     int nextCap = newCount + growPad;
     CraftPSPVertex *newBuf = (CraftPSPVertex *)memalign(16, nextCap * sizeof(CraftPSPVertex));
-    if (!newBuf) return false; // keep previous mesh if allocation fails
+    if (!newBuf) {
+      // Low-memory fallback: keep existing buffer and upload a truncated mesh
+      // rather than leaving the chunk permanently invisible/dirty.
+      if (target && targetCap > 0) {
+        int clamped = targetCap;
+        memcpy(target, src, clamped * sizeof(CraftPSPVertex));
+        sceKernelDcacheWritebackInvalidateRange(target,
+                                                clamped * sizeof(CraftPSPVertex));
+        dst = target;
+        dstCap = targetCap;
+        dstCount = clamped;
+        return true;
+      }
+      // No existing mesh yet: try progressively smaller allocations and upload
+      // a reduced mesh so the chunk still renders instead of disappearing.
+      int fallbackCap = (newCount / 2) - ((newCount / 2) % 3);
+      while (!newBuf && fallbackCap >= 256) {
+        newBuf = (CraftPSPVertex *)memalign(16, fallbackCap * sizeof(CraftPSPVertex));
+        if (!newBuf) {
+          fallbackCap /= 2;
+          fallbackCap -= (fallbackCap % 3);
+        }
+      }
+      if (newBuf && fallbackCap > 0) {
+        memcpy(newBuf, src, fallbackCap * sizeof(CraftPSPVertex));
+        sceKernelDcacheWritebackInvalidateRange(newBuf,
+                                                fallbackCap * sizeof(CraftPSPVertex));
+        dst = newBuf;
+        dstCap = fallbackCap;
+        dstCount = fallbackCap;
+        return true;
+      }
+      // Still out of memory: report failure so caller keeps the subchunk dirty
+      // and retries compilation/upload later.
+      dstCount = 0;
+      return false;
+    }
     if (dst) free(dst);
     target = newBuf;
     targetCap = nextCap;
@@ -37,6 +78,24 @@ static bool uploadMeshSafe(CraftPSPVertex *&dst, int &dstCount, int &dstCap,
 
   memcpy(target, src, newCount * sizeof(CraftPSPVertex));
   sceKernelDcacheWritebackInvalidateRange(target, newCount * sizeof(CraftPSPVertex));
+
+  // If geometry density dropped significantly, shrink the resident mesh buffer
+  // to reduce long-run fragmentation and peak RAM usage on PSP.
+  if (target && targetCap > newCount * 2) {
+    int shrinkCap = newCount + growPad;
+    CraftPSPVertex *shrunk =
+        (CraftPSPVertex *)memalign(16, shrinkCap * sizeof(CraftPSPVertex));
+    if (shrunk) {
+      memcpy(shrunk, target, newCount * sizeof(CraftPSPVertex));
+      sceKernelDcacheWritebackInvalidateRange(shrunk,
+                                              newCount * sizeof(CraftPSPVertex));
+      if (target != dst) free(target);
+      if (dst) free(dst);
+      target = shrunk;
+      targetCap = shrinkCap;
+    }
+  }
+
   dst = target;
   dstCap = targetCap;
   dstCount = newCount;
@@ -296,9 +355,6 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
   }
 
   // Draw opaque chunks
-  float sunBr = m_level->getSunBrightness();
-  uint8_t sunByte = (uint8_t)(sunBr * 0.85f * 255.0f + 0.15f * 255.0f); // [0.15, 1.0]
-  uint32_t sunAmbient = (0xFF000000u) | ((uint32_t)sunByte << 16) | ((uint32_t)sunByte << 8) | sunByte;
 
   // Helper: set model matrix to identity (vertices are already in absolute world space)
   auto setChunkMatrix = [](Chunk *c) {
@@ -309,8 +365,10 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
 
   sceGuDisable(GU_ALPHA_TEST);
   sceGuDisable(GU_BLEND);
-  sceGuEnable(GU_LIGHTING);
-  sceGuAmbient(sunAmbient);
+  // Chunk vertices are already lit in TileRenderer (sky/block light + sun scale).
+  // Keep fixed-function lighting off here, otherwise GU ambient flattens contrast
+  // and makes the world look uniformly bright.
+  sceGuDisable(GU_LIGHTING);
 
   for (int i = 0; i < visibleCount; i++) {
     Chunk *c = visibleChunks[i].chunk;
@@ -337,11 +395,8 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
                     c->emitTriCount[sy], nullptr, c->emitVertices[sy]);
   }
 
-  sceGuDisable(GU_LIGHTING);
-
   // Draw inner leaves (Back-to-Front check)
-  sceGuEnable(GU_LIGHTING);
-  sceGuAmbient(sunAmbient);
+  sceGuDisable(GU_LIGHTING);
   sceGuEnable(GU_ALPHA_TEST);
   sceGuEnable(GU_BLEND);
   sceGuDisable(GU_CULL_FACE); // Allow plants/water to be seen from both sides
