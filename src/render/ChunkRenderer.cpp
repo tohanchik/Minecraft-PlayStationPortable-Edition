@@ -20,6 +20,11 @@ static CraftPSPVertex g_emitBuf[SUBCHUNK_COUNT][MAX_VERTS_PER_SUB_CHUNK];
 static bool uploadMeshSafe(CraftPSPVertex *&dst, int &dstCount, int &dstCap,
                            int newCount, int growPad, CraftPSPVertex *src) {
   if (newCount <= 0) {
+    if (dst) {
+      free(dst);
+      dst = nullptr;
+    }
+    dstCap = 0;
     dstCount = 0;
     return true;
   }
@@ -29,7 +34,22 @@ static bool uploadMeshSafe(CraftPSPVertex *&dst, int &dstCount, int &dstCap,
   if (newCount > targetCap) {
     int nextCap = newCount + growPad;
     CraftPSPVertex *newBuf = (CraftPSPVertex *)memalign(16, nextCap * sizeof(CraftPSPVertex));
-    if (!newBuf) return false; // keep previous mesh if allocation fails
+    if (!newBuf) {
+      // Low-memory fallback: keep existing buffer and upload a truncated mesh
+      // rather than leaving the chunk permanently invisible/dirty.
+      if (target && targetCap > 0) {
+        int clamped = targetCap;
+        memcpy(target, src, clamped * sizeof(CraftPSPVertex));
+        sceKernelDcacheWritebackInvalidateRange(target,
+                                                clamped * sizeof(CraftPSPVertex));
+        dst = target;
+        dstCap = targetCap;
+        dstCount = clamped;
+        return true;
+      }
+      dstCount = 0;
+      return true;
+    }
     if (dst) free(dst);
     target = newBuf;
     targetCap = nextCap;
@@ -37,6 +57,24 @@ static bool uploadMeshSafe(CraftPSPVertex *&dst, int &dstCount, int &dstCap,
 
   memcpy(target, src, newCount * sizeof(CraftPSPVertex));
   sceKernelDcacheWritebackInvalidateRange(target, newCount * sizeof(CraftPSPVertex));
+
+  // If geometry density dropped significantly, shrink the resident mesh buffer
+  // to reduce long-run fragmentation and peak RAM usage on PSP.
+  if (target && targetCap > newCount * 2) {
+    int shrinkCap = newCount + growPad;
+    CraftPSPVertex *shrunk =
+        (CraftPSPVertex *)memalign(16, shrinkCap * sizeof(CraftPSPVertex));
+    if (shrunk) {
+      memcpy(shrunk, target, newCount * sizeof(CraftPSPVertex));
+      sceKernelDcacheWritebackInvalidateRange(shrunk,
+                                              newCount * sizeof(CraftPSPVertex));
+      if (target != dst) free(target);
+      if (dst) free(dst);
+      target = shrunk;
+      targetCap = shrinkCap;
+    }
+  }
+
   dst = target;
   dstCap = targetCap;
   dstCount = newCount;
