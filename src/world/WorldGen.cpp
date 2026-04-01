@@ -34,6 +34,35 @@ static uint8_t shoreFillFromTop(uint8_t topId) {
   return BLOCK_DIRT;
 }
 
+static inline bool isTopSurfaceBlock(uint8_t id) {
+  return id == BLOCK_GRASS || id == BLOCK_SAND || id == BLOCK_GRAVEL;
+}
+
+static uint8_t majorityTopBlock(
+    uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
+    int lx, int lz, int y) {
+  int grass = 0;
+  int sand = 0;
+  int gravel = 0;
+
+  const int nx[4] = {-1, 1, 0, 0};
+  const int nz[4] = {0, 0, -1, 1};
+  for (int i = 0; i < 4; ++i) {
+    int xx = lx + nx[i];
+    int zz = lz + nz[i];
+    if (xx < 0 || xx >= CHUNK_SIZE_X || zz < 0 || zz >= CHUNK_SIZE_Z) continue;
+    uint8_t n = out[xx][zz][y];
+    if (n == BLOCK_GRASS) ++grass;
+    else if (n == BLOCK_SAND) ++sand;
+    else if (n == BLOCK_GRAVEL) ++gravel;
+  }
+
+  if (grass >= 3) return BLOCK_GRASS;
+  if (sand >= 3) return BLOCK_SAND;
+  if (gravel >= 3) return BLOCK_GRAVEL;
+  return 0;
+}
+
 static void placeOreVein(
     uint8_t out[CHUNK_SIZE_X][CHUNK_SIZE_Z][CHUNK_SIZE_Y],
     int cx, int cz, Random &rng, int wx, int wy, int wz, uint8_t oreId, int veinSize) {
@@ -197,6 +226,32 @@ void WorldGen::generateChunk(
             filler = BLOCK_SANDSTONE;
           }
         }
+      }
+    }
+  }
+
+  // Remove tiny 1-block "salt-and-pepper" surface noise (grass/sand/gravel).
+  // This keeps beaches cleaner and avoids random mixed patches inland.
+  uint8_t topFix[CHUNK_SIZE_X][CHUNK_SIZE_Z];
+  memset(topFix, 0, sizeof(topFix));
+  for (int lx = 1; lx < CHUNK_SIZE_X - 1; ++lx) {
+    for (int lz = 1; lz < CHUNK_SIZE_Z - 1; ++lz) {
+      int y = topSolidY(out, lx, lz);
+      if (y <= 0 || y >= CHUNK_SIZE_Y - 1) continue;
+      uint8_t cur = out[lx][lz][y];
+      if (!isTopSurfaceBlock(cur)) continue;
+      uint8_t maj = majorityTopBlock(out, lx, lz, y);
+      if (maj != 0 && maj != cur) topFix[lx][lz] = maj;
+    }
+  }
+  for (int lx = 1; lx < CHUNK_SIZE_X - 1; ++lx) {
+    for (int lz = 1; lz < CHUNK_SIZE_Z - 1; ++lz) {
+      uint8_t fix = topFix[lx][lz];
+      if (fix == 0) continue;
+      int y = topSolidY(out, lx, lz);
+      out[lx][lz][y] = fix;
+      if (y > 0 && out[lx][lz][y - 1] != BLOCK_BEDROCK) {
+        out[lx][lz][y - 1] = (fix == BLOCK_GRASS) ? BLOCK_DIRT : fix;
       }
     }
   }
