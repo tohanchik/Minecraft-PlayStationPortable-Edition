@@ -9,6 +9,94 @@
 #include <string.h>
 #include <math.h>
 
+enum GenBiomeType {
+  BIOME_TUNDRA = 0,
+  BIOME_TAIGA = 1,
+  BIOME_PLAINS = 2,
+  BIOME_FOREST = 3,
+  BIOME_DESERT = 4
+};
+
+struct GenBiomeSurface {
+  uint8_t top;
+  uint8_t filler;
+};
+
+static GenBiomeType pickBiome(float temperature, float downfall) {
+  if (temperature < 0.22f) return BIOME_TUNDRA;
+  if (temperature < 0.40f) return BIOME_TAIGA;
+  if (temperature > 0.78f && downfall < 0.22f) return BIOME_DESERT;
+  if (downfall > 0.55f) return BIOME_FOREST;
+  return BIOME_PLAINS;
+}
+
+static GenBiomeSurface getBiomeSurface(GenBiomeType biome) {
+  GenBiomeSurface out = {BLOCK_GRASS, BLOCK_DIRT};
+  if (biome == BIOME_DESERT) {
+    out.top = BLOCK_SAND;
+    out.filler = BLOCK_SAND;
+  } else if (biome == BIOME_TUNDRA) {
+    out.top = BLOCK_SNOW;
+    out.filler = BLOCK_DIRT;
+  }
+  return out;
+}
+
+static void getClimateAt(int wx, int wz, int64_t seed, float &temperature,
+                         float &downfall, GenBiomeType &biome) {
+  const float zoom = 2.0f;
+  const float tempScale = zoom / 80.0f;
+  const float downfallScale = zoom / 40.0f;
+  const float noiseScale = 1.0f / 4.0f;
+
+  float t = NoiseGen::octaveNoise(wx * tempScale, wz * tempScale,
+                                  seed * 9871LL + 0x111F23LL, 4, 0.5f);
+  float d = NoiseGen::octaveNoise(wx * downfallScale, wz * downfallScale,
+                                  seed * 39811LL + 0x29A3C1LL, 4, 0.5f);
+  float n = NoiseGen::octaveNoise(wx * noiseScale, wz * noiseScale,
+                                  seed * 543321LL + 0x58D2B5LL, 2, 0.5f);
+
+  float noise = (n * 1.1f + 0.5f);
+  float tMix = (t * 0.15f + 0.7f) * 0.99f + noise * 0.01f;
+  float dMix = (d * 0.15f + 0.5f) * 0.998f + noise * 0.002f;
+
+  tMix = 1.0f - ((1.0f - tMix) * (1.0f - tMix));
+  if (tMix < 0.0f) tMix = 0.0f;
+  if (dMix < 0.0f) dMix = 0.0f;
+  if (tMix > 1.0f) tMix = 1.0f;
+  if (dMix > 1.0f) dMix = 1.0f;
+
+  temperature = tMix;
+  downfall = dMix;
+  biome = pickBiome(temperature, downfall);
+}
+
+static float getDensityAt(int wx, int y, int wz, int64_t seed) {
+  float n1 = NoiseGen::octaveNoise3d(wx / 96.0f, y / 48.0f, wz / 96.0f,
+                                     seed ^ 0x6A09E667LL, 8, 0.5f) *
+                 2.0f -
+             1.0f;
+  float n2 = NoiseGen::octaveNoise3d(wx / 48.0f, y / 32.0f, wz / 48.0f,
+                                     seed ^ 0xBB67AE85LL, 6, 0.5f) *
+                 2.0f -
+             1.0f;
+  float n3 = NoiseGen::octaveNoise3d(wx / 24.0f, y / 24.0f, wz / 24.0f,
+                                     seed ^ 0x3C6EF372LL, 4, 0.5f) *
+                 2.0f -
+             1.0f;
+  float blend = (NoiseGen::octaveNoise3d(wx / 128.0f, y / 64.0f, wz / 128.0f,
+                                         seed ^ 0xA54FF53ALL, 4, 0.5f) *
+                     2.0f -
+                 1.0f) *
+                    0.5f +
+                0.5f;
+  if (blend < 0.0f) blend = 0.0f;
+  if (blend > 1.0f) blend = 1.0f;
+  float terrain = (n1 * (1.0f - blend) + n2 * blend) + n3 * 0.30f;
+  float vertical = ((float)y - 64.0f) / 28.0f;
+  return terrain - vertical;
+}
+
 static inline bool inChunk(int lx, int ly, int lz) {
   return lx >= 0 && lx < CHUNK_SIZE_X && lz >= 0 && lz < CHUNK_SIZE_Z &&
          ly > 0 && ly < CHUNK_SIZE_Y;
@@ -208,13 +296,13 @@ static void stabilizeSeaWaterAndShore(
 
 // Get terrain height
 int WorldGen::getTerrainHeight(int wx, int wz, int64_t seed) {
-  // MCPE-like layered terrain blend: broad continents + detail hills.
-  float base = NoiseGen::octaveNoise(wx / 192.0f, wz / 192.0f, seed ^ 0x51A9B17D) * 2.0f - 1.0f;
-  float hills = NoiseGen::octaveNoise(wx / 72.0f, wz / 72.0f, seed ^ 0x7F4A7C15) * 2.0f - 1.0f;
-  float detail = NoiseGen::octaveNoise(wx / 28.0f, wz / 28.0f, seed ^ 0x1D872B41) * 2.0f - 1.0f;
-  int h = 64 + (int)(base * 18.0f + hills * 14.0f + detail * 6.0f);
-  if (h < 4) h = 4;
-  if (h > CHUNK_SIZE_Y - 2) h = CHUNK_SIZE_Y - 2;
+  int h = 1;
+  for (int y = CHUNK_SIZE_Y - 2; y >= 1; --y) {
+    if (getDensityAt(wx, y, wz, seed) > 0.0f) {
+      h = y;
+      break;
+    }
+  }
   return h;
 }
 
@@ -228,27 +316,88 @@ void WorldGen::generateChunk(
   Random rng(worldSeed ^ ((int64_t)cx * 341873128712LL) ^
              ((int64_t)cz * 132897987541LL));
 
-  // === Base Terrain ===
-  for (int lx = 0; lx < CHUNK_SIZE_X; lx++) {
-    for (int lz = 0; lz < CHUNK_SIZE_Z; lz++) {
+  float temperatureMap[CHUNK_SIZE_X][CHUNK_SIZE_Z];
+  GenBiomeType biomeMap[CHUNK_SIZE_X][CHUNK_SIZE_Z];
+
+  for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
       int wx = cx * CHUNK_SIZE_X + lx;
       int wz = cz * CHUNK_SIZE_Z + lz;
+      float temperature = 0.5f;
+      float downfall = 0.5f;
+      GenBiomeType biome = BIOME_PLAINS;
+      getClimateAt(wx, wz, worldSeed, temperature, downfall, biome);
+      temperatureMap[lx][lz] = temperature;
+      biomeMap[lx][lz] = biome;
+    }
+  }
 
-      int surfaceY = getTerrainHeight(wx, wz, worldSeed);
-      if (surfaceY >= CHUNK_SIZE_Y)
-        surfaceY = CHUNK_SIZE_Y - 1;
+  // === Base Terrain ===
+  // Generate density on a coarse 4x4x8 grid and trilinearly interpolate,
+  // similar in spirit to MCPE prepareHeights/getHeights, but with our
+  // existing noise backend.
+  const int cellX = 4;
+  const int cellY = 8;
+  const int cellZ = 4;
+  const int sx = CHUNK_SIZE_X / cellX + 1;
+  const int sy = CHUNK_SIZE_Y / cellY + 1;
+  const int sz = CHUNK_SIZE_Z / cellZ + 1;
+  float density[sx][sz][sy];
 
-      // Base density fill for surface-pass: solid stone + bedrock only.
-      for (int y = 0; y <= surfaceY; y++) {
-        out[lx][lz][y] = (y == 0) ? BLOCK_BEDROCK : BLOCK_STONE;
+  for (int gx = 0; gx < sx; ++gx) {
+    for (int gz = 0; gz < sz; ++gz) {
+      for (int gy = 0; gy < sy; ++gy) {
+        int wx = cx * CHUNK_SIZE_X + gx * cellX;
+        int wz = cz * CHUNK_SIZE_Z + gz * cellZ;
+        int y = gy * cellY;
+        density[gx][gz][gy] = getDensityAt(wx, y, wz, worldSeed);
       }
+    }
+  }
 
-      // Water at sea level (MCPE-style ~62).
-      const int seaLevel = 62;
-      if (surfaceY < seaLevel) {
-        for (int y = surfaceY + 1; y <= seaLevel; y++) {
-          if (y < CHUNK_SIZE_Y)
-            out[lx][lz][y] = BLOCK_WATER_STILL;
+  for (int gx = 0; gx < sx - 1; ++gx) {
+    for (int gz = 0; gz < sz - 1; ++gz) {
+      for (int gy = 0; gy < sy - 1; ++gy) {
+        float d000 = density[gx][gz][gy];
+        float d100 = density[gx + 1][gz][gy];
+        float d010 = density[gx][gz + 1][gy];
+        float d110 = density[gx + 1][gz + 1][gy];
+        float d001 = density[gx][gz][gy + 1];
+        float d101 = density[gx + 1][gz][gy + 1];
+        float d011 = density[gx][gz + 1][gy + 1];
+        float d111 = density[gx + 1][gz + 1][gy + 1];
+
+        for (int lx0 = 0; lx0 < cellX; ++lx0) {
+          float fx = (float)lx0 / (float)cellX;
+          for (int lz0 = 0; lz0 < cellZ; ++lz0) {
+            float fz = (float)lz0 / (float)cellZ;
+            int lx = gx * cellX + lx0;
+            int lz = gz * cellZ + lz0;
+            float temperature = temperatureMap[lx][lz];
+
+            for (int ly0 = 0; ly0 < cellY; ++ly0) {
+              float fy = (float)ly0 / (float)cellY;
+              int y = gy * cellY + ly0;
+              if (y >= CHUNK_SIZE_Y) continue;
+
+              float d00 = d000 + (d100 - d000) * fx;
+              float d10 = d010 + (d110 - d010) * fx;
+              float d01 = d001 + (d101 - d001) * fx;
+              float d11 = d011 + (d111 - d011) * fx;
+              float d0 = d00 + (d10 - d00) * fz;
+              float d1 = d01 + (d11 - d01) * fz;
+              float d = d0 + (d1 - d0) * fy;
+
+              if (y == 0) {
+                out[lx][lz][y] = BLOCK_BEDROCK;
+              } else if (d > 0.0f) {
+                out[lx][lz][y] = BLOCK_STONE;
+              } else if (y <= 62) {
+                if (y == 62 && temperature < 0.5f) out[lx][lz][y] = BLOCK_ICE;
+                else out[lx][lz][y] = BLOCK_WATER_STILL;
+              }
+            }
+          }
         }
       }
     }
@@ -262,6 +411,9 @@ void WorldGen::generateChunk(
     for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
       int wx = cx * CHUNK_SIZE_X + lx;
       int wz = cz * CHUNK_SIZE_Z + lz;
+      float temperature = temperatureMap[lx][lz];
+      GenBiomeType biome = biomeMap[lx][lz];
+      GenBiomeSurface surface = getBiomeSurface(biome);
 
       float sandN = NoiseGen::octaveNoise(wx / 32.0f, wz / 32.0f, worldSeed ^ 0x5A17D3LL, 4, 0.5f) * 2.0f - 1.0f;
       float gravelN = NoiseGen::octaveNoise(wx / 32.0f, wz / 32.0f, worldSeed ^ 0x193A49LL, 4, 0.5f) * 2.0f - 1.0f;
@@ -272,8 +424,8 @@ void WorldGen::generateChunk(
       int runDepth = (int)(depthN / 3.0f + 3.0f + rng.nextFloat() * 0.25f);
 
       int run = -1;
-      uint8_t top = BLOCK_GRASS;
-      uint8_t filler = BLOCK_DIRT;
+      uint8_t top = surface.top;
+      uint8_t filler = surface.filler;
 
       for (int y = CHUNK_SIZE_Y - 1; y >= 0; --y) {
         if (y <= rng.nextInt(5)) {
@@ -293,8 +445,8 @@ void WorldGen::generateChunk(
             top = BLOCK_AIR;
             filler = BLOCK_STONE;
           } else if (y >= seaLevel - 4 && y <= seaLevel + 1) {
-            top = BLOCK_GRASS;
-            filler = BLOCK_DIRT;
+            top = surface.top;
+            filler = surface.filler;
             if (useGravel) {
               top = BLOCK_AIR;
               filler = BLOCK_GRAVEL;
@@ -305,7 +457,10 @@ void WorldGen::generateChunk(
             }
           }
 
-          if (y < seaLevel && top == BLOCK_AIR) top = BLOCK_WATER_STILL;
+          if (y < seaLevel && top == BLOCK_AIR) {
+            if (temperature < 0.15f) top = BLOCK_ICE;
+            else top = BLOCK_WATER_STILL;
+          }
 
           run = runDepth;
           out[lx][lz][y] = (y >= seaLevel - 1) ? top : filler;
