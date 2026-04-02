@@ -9,6 +9,7 @@
 #include <pspgum.h>
 #include <pspkernel.h>
 #include <string.h>
+#include <algorithm>
 
 #define MAX_VERTS_PER_SUB_CHUNK 8000
 
@@ -100,6 +101,267 @@ static bool uploadMeshSafe(CraftPSPVertex *&dst, int &dstCount, int &dstCap,
   dstCap = targetCap;
   dstCount = newCount;
   return true;
+}
+
+static inline float decodeLight01(uint8_t l) {
+  float v = 1.0f - (float)l / 15.0f;
+  return (1.0f - v) / (v * 3.0f + 1.0f);
+}
+
+static inline uint32_t mulColor(uint32_t baseColor, float b) {
+  uint8_t a = (baseColor >> 24) & 0xFF;
+  uint8_t bb = (baseColor >> 16) & 0xFF;
+  uint8_t g = (baseColor >> 8) & 0xFF;
+  uint8_t r = baseColor & 0xFF;
+  bb = (uint8_t)(bb * b);
+  g = (uint8_t)(g * b);
+  r = (uint8_t)(r * b);
+  return (a << 24) | (bb << 16) | (g << 8) | r;
+}
+
+static inline bool isOpaqueCube(uint8_t id) {
+  const BlockProps &bp = g_blockProps[id];
+  return bp.isSolid() && !bp.isTransparent() && !bp.isLiquid();
+}
+
+static void emitGreedyOpaqueRuns(Level *level, Chunk *c, int sy, Tesselator &tess) {
+  const int yStart = sy * 16;
+  const int yEnd = yStart + 16;
+  const float ts = 1.0f / 16.0f;
+  const float eps = 0.125f / 256.0f;
+  const float sunScale = level->getSunBrightness() * 0.85f + 0.15f;
+  const int MAX_RUN = 2;
+
+  auto faceBrightness = [&](int wx, int wy, int wz) -> float {
+    uint8_t sl = (wy < 0 || wy >= CHUNK_SIZE_Y) ? 15 : level->getSkyLight(wx, wy, wz);
+    uint8_t bl = (wy < 0 || wy >= CHUNK_SIZE_Y) ? 0 : level->getBlockLight(wx, wy, wz);
+    float sky = decodeLight01(sl) * sunScale;
+    float blk = decodeLight01(bl);
+    return (blk > sky + 0.05f) ? blk : sky;
+  };
+
+  // TOP/BOTTOM runs (merge along X).
+  for (int y = yStart; y < yEnd; ++y) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+      int x = 0;
+      while (x < CHUNK_SIZE_X) {
+        uint8_t id = c->blocks[x][lz][y];
+        int wx = c->cx * CHUNK_SIZE_X + x;
+        int wz = c->cz * CHUNK_SIZE_Z + lz;
+        if (!isOpaqueCube(id)) { x++; continue; }
+        bool topExposed = !g_blockProps[level->getBlock(wx, y + 1, wz)].isOpaque();
+        if (!topExposed) { x++; continue; }
+        int x0 = x;
+        while (x + 1 < CHUNK_SIZE_X) {
+          if ((x - x0 + 1) >= MAX_RUN) break;
+          uint8_t nid = c->blocks[x + 1][lz][y];
+          int nwx = c->cx * CHUNK_SIZE_X + (x + 1);
+          if (nid != id) break;
+          if (g_blockProps[level->getBlock(nwx, y + 1, wz)].isOpaque()) break;
+          x++;
+        }
+        int x1 = x;
+        const BlockUV &uv = g_blockUV[id];
+        float u0 = uv.top_x * ts + eps, v0 = uv.top_y * ts + eps;
+        float u1 = (uv.top_x + 1) * ts - eps, v1 = (uv.top_y + 1) * ts - eps;
+        float b = faceBrightness(c->cx * CHUNK_SIZE_X + x0, y + 1, wz);
+        uint32_t col = mulColor(0xFFFFFFFF, b);
+        float fx0 = (float)(c->cx * CHUNK_SIZE_X + x0);
+        float fx1 = (float)(c->cx * CHUNK_SIZE_X + x1 + 1);
+        float fy = (float)y + 1.0f;
+        float fz0 = (float)(c->cz * CHUNK_SIZE_Z + lz);
+        float fz1 = fz0 + 1.0f;
+        tess.addQuad(u0, v0, u1, v1, col, col, col, col,
+                     fx0, fy, fz0, fx1, fy, fz0, fx0, fy, fz1, fx1, fy, fz1);
+        x++;
+      }
+    }
+  }
+
+  for (int y = yStart; y < yEnd; ++y) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+      int x = 0;
+      while (x < CHUNK_SIZE_X) {
+        uint8_t id = c->blocks[x][lz][y];
+        int wx = c->cx * CHUNK_SIZE_X + x;
+        int wz = c->cz * CHUNK_SIZE_Z + lz;
+        if (!isOpaqueCube(id)) { x++; continue; }
+        bool botExposed = !g_blockProps[level->getBlock(wx, y - 1, wz)].isOpaque();
+        if (!botExposed) { x++; continue; }
+        int x0 = x;
+        while (x + 1 < CHUNK_SIZE_X) {
+          if ((x - x0 + 1) >= MAX_RUN) break;
+          uint8_t nid = c->blocks[x + 1][lz][y];
+          int nwx = c->cx * CHUNK_SIZE_X + (x + 1);
+          if (nid != id) break;
+          if (g_blockProps[level->getBlock(nwx, y - 1, wz)].isOpaque()) break;
+          x++;
+        }
+        int x1 = x;
+        const BlockUV &uv = g_blockUV[id];
+        float u0 = uv.bot_x * ts + eps, v0 = uv.bot_y * ts + eps;
+        float u1 = (uv.bot_x + 1) * ts - eps, v1 = (uv.bot_y + 1) * ts - eps;
+        float b = faceBrightness(c->cx * CHUNK_SIZE_X + x0, y - 1, wz);
+        uint32_t col = mulColor(0xFF999999, b);
+        float fx0 = (float)(c->cx * CHUNK_SIZE_X + x0);
+        float fx1 = (float)(c->cx * CHUNK_SIZE_X + x1 + 1);
+        float fy = (float)y;
+        float fz0 = (float)(c->cz * CHUNK_SIZE_Z + lz);
+        float fz1 = fz0 + 1.0f;
+        tess.addQuad(u0, v0, u1, v1, col, col, col, col,
+                     fx0, fy, fz1, fx1, fy, fz1, fx0, fy, fz0, fx1, fy, fz0);
+        x++;
+      }
+    }
+  }
+
+  // Z- faces (north), merge along X.
+  for (int y = yStart; y < yEnd; ++y) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+      int x = 0;
+      while (x < CHUNK_SIZE_X) {
+        uint8_t id = c->blocks[x][lz][y];
+        int wx = c->cx * CHUNK_SIZE_X + x;
+        int wz = c->cz * CHUNK_SIZE_Z + lz;
+        if (!isOpaqueCube(id)) { x++; continue; }
+        bool exposed = !g_blockProps[level->getBlock(wx, y, wz - 1)].isOpaque();
+        if (!exposed) { x++; continue; }
+        int x0 = x;
+        while (x + 1 < CHUNK_SIZE_X) {
+          if ((x - x0 + 1) >= MAX_RUN) break;
+          uint8_t nid = c->blocks[x + 1][lz][y];
+          int nwx = c->cx * CHUNK_SIZE_X + (x + 1);
+          if (nid != id) break;
+          if (g_blockProps[level->getBlock(nwx, y, wz - 1)].isOpaque()) break;
+          x++;
+        }
+        int x1 = x;
+        const BlockUV &uv = g_blockUV[id];
+        float u0 = uv.side_x * ts + eps, v0 = uv.side_y * ts + eps;
+        float u1 = (uv.side_x + 1) * ts - eps, v1 = (uv.side_y + 1) * ts - eps;
+        float b = faceBrightness(c->cx * CHUNK_SIZE_X + x0, y, wz - 1);
+        uint32_t col = mulColor(0xFFCCCCCC, b);
+        float fx0 = (float)(c->cx * CHUNK_SIZE_X + x0);
+        float fx1 = (float)(c->cx * CHUNK_SIZE_X + x1 + 1);
+        float fy0 = (float)y, fy1 = (float)y + 1.0f;
+        float fz = (float)wz;
+        tess.addQuad(u0, v0, u1, v1, col, col, col, col,
+                     fx0, fy1, fz, fx1, fy1, fz, fx0, fy0, fz, fx1, fy0, fz);
+        x++;
+      }
+    }
+  }
+
+  // Z+ faces (south), merge along X.
+  for (int y = yStart; y < yEnd; ++y) {
+    for (int lz = 0; lz < CHUNK_SIZE_Z; ++lz) {
+      int x = 0;
+      while (x < CHUNK_SIZE_X) {
+        uint8_t id = c->blocks[x][lz][y];
+        int wx = c->cx * CHUNK_SIZE_X + x;
+        int wz = c->cz * CHUNK_SIZE_Z + lz;
+        if (!isOpaqueCube(id)) { x++; continue; }
+        bool exposed = !g_blockProps[level->getBlock(wx, y, wz + 1)].isOpaque();
+        if (!exposed) { x++; continue; }
+        int x0 = x;
+        while (x + 1 < CHUNK_SIZE_X) {
+          if ((x - x0 + 1) >= MAX_RUN) break;
+          uint8_t nid = c->blocks[x + 1][lz][y];
+          int nwx = c->cx * CHUNK_SIZE_X + (x + 1);
+          if (nid != id) break;
+          if (g_blockProps[level->getBlock(nwx, y, wz + 1)].isOpaque()) break;
+          x++;
+        }
+        int x1 = x;
+        const BlockUV &uv = g_blockUV[id];
+        float u0 = uv.side_x * ts + eps, v0 = uv.side_y * ts + eps;
+        float u1 = (uv.side_x + 1) * ts - eps, v1 = (uv.side_y + 1) * ts - eps;
+        float b = faceBrightness(c->cx * CHUNK_SIZE_X + x0, y, wz + 1);
+        uint32_t col = mulColor(0xFFCCCCCC, b);
+        float fx0 = (float)(c->cx * CHUNK_SIZE_X + x0);
+        float fx1 = (float)(c->cx * CHUNK_SIZE_X + x1 + 1);
+        float fy0 = (float)y, fy1 = (float)y + 1.0f;
+        float fz = (float)wz + 1.0f;
+        tess.addQuad(u0, v0, u1, v1, col, col, col, col,
+                     fx1, fy1, fz, fx0, fy1, fz, fx1, fy0, fz, fx0, fy0, fz);
+        x++;
+      }
+    }
+  }
+
+  // X- faces (west), merge along Z.
+  for (int y = yStart; y < yEnd; ++y) {
+    for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+      int z = 0;
+      while (z < CHUNK_SIZE_Z) {
+        uint8_t id = c->blocks[lx][z][y];
+        int wx = c->cx * CHUNK_SIZE_X + lx;
+        int wz = c->cz * CHUNK_SIZE_Z + z;
+        if (!isOpaqueCube(id)) { z++; continue; }
+        bool exposed = !g_blockProps[level->getBlock(wx - 1, y, wz)].isOpaque();
+        if (!exposed) { z++; continue; }
+        int z0 = z;
+        while (z + 1 < CHUNK_SIZE_Z) {
+          if ((z - z0 + 1) >= MAX_RUN) break;
+          uint8_t nid = c->blocks[lx][z + 1][y];
+          int nwz = c->cz * CHUNK_SIZE_Z + (z + 1);
+          if (nid != id) break;
+          if (g_blockProps[level->getBlock(wx - 1, y, nwz)].isOpaque()) break;
+          z++;
+        }
+        int z1 = z;
+        const BlockUV &uv = g_blockUV[id];
+        float u0 = uv.side_x * ts + eps, v0 = uv.side_y * ts + eps;
+        float u1 = (uv.side_x + 1) * ts - eps, v1 = (uv.side_y + 1) * ts - eps;
+        float b = faceBrightness(wx - 1, y, c->cz * CHUNK_SIZE_Z + z0);
+        uint32_t col = mulColor(0xFFCCCCCC, b);
+        float fz0 = (float)(c->cz * CHUNK_SIZE_Z + z0);
+        float fz1 = (float)(c->cz * CHUNK_SIZE_Z + z1 + 1);
+        float fy0 = (float)y, fy1 = (float)y + 1.0f;
+        float fx = (float)wx;
+        tess.addQuad(u0, v0, u1, v1, col, col, col, col,
+                     fx, fy1, fz1, fx, fy1, fz0, fx, fy0, fz1, fx, fy0, fz0);
+        z++;
+      }
+    }
+  }
+
+  // X+ faces (east), merge along Z.
+  for (int y = yStart; y < yEnd; ++y) {
+    for (int lx = 0; lx < CHUNK_SIZE_X; ++lx) {
+      int z = 0;
+      while (z < CHUNK_SIZE_Z) {
+        uint8_t id = c->blocks[lx][z][y];
+        int wx = c->cx * CHUNK_SIZE_X + lx;
+        int wz = c->cz * CHUNK_SIZE_Z + z;
+        if (!isOpaqueCube(id)) { z++; continue; }
+        bool exposed = !g_blockProps[level->getBlock(wx + 1, y, wz)].isOpaque();
+        if (!exposed) { z++; continue; }
+        int z0 = z;
+        while (z + 1 < CHUNK_SIZE_Z) {
+          if ((z - z0 + 1) >= MAX_RUN) break;
+          uint8_t nid = c->blocks[lx][z + 1][y];
+          int nwz = c->cz * CHUNK_SIZE_Z + (z + 1);
+          if (nid != id) break;
+          if (g_blockProps[level->getBlock(wx + 1, y, nwz)].isOpaque()) break;
+          z++;
+        }
+        int z1 = z;
+        const BlockUV &uv = g_blockUV[id];
+        float u0 = uv.side_x * ts + eps, v0 = uv.side_y * ts + eps;
+        float u1 = (uv.side_x + 1) * ts - eps, v1 = (uv.side_y + 1) * ts - eps;
+        float b = faceBrightness(wx + 1, y, c->cz * CHUNK_SIZE_Z + z0);
+        uint32_t col = mulColor(0xFFCCCCCC, b);
+        float fz0 = (float)(c->cz * CHUNK_SIZE_Z + z0);
+        float fz1 = (float)(c->cz * CHUNK_SIZE_Z + z1 + 1);
+        float fy0 = (float)y, fy1 = (float)y + 1.0f;
+        float fx = (float)wx + 1.0f;
+        tess.addQuad(u0, v0, u1, v1, col, col, col, col,
+                     fx, fy1, fz0, fx, fy1, fz1, fx, fy0, fz0, fx, fy0, fz1);
+        z++;
+      }
+    }
+  }
 }
 
 ChunkRenderer::ChunkRenderer(TextureAtlas *atlas)
@@ -274,7 +536,8 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
   Frustum frustum;
   frustum.update(vp);
 
-  static const float RENDER_DISTANCE = 64.0f;
+  // 2 chunks draw distance (2 * 16 blocks)
+  static const float RENDER_DISTANCE = 32.0f;
   static const float FANCY_LOD_DIST = 32.0f; 
 
 
@@ -314,7 +577,7 @@ void ChunkRenderer::render(float camX, float camY, float camZ) {
         float dz = chunkCenterZ - camZ;
         
         // Distance culling
-        float maxDist = RENDER_DISTANCE + 11.5f;
+        float maxDist = RENDER_DISTANCE;
         float distSqHoriz = dx * dx + dz * dz;
         if (distSqHoriz > maxDist * maxDist)
           continue;
